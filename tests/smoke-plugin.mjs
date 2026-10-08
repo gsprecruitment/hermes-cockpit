@@ -72,7 +72,7 @@ const ctx = {
   addEventListener: (t, type, fn, o) => { t.addEventListener(type, fn, o); return () => t.removeEventListener(type, fn, o) },
   onDispose: (fn) => disposers.push(fn), register: (c) => { contribs.push(c); return () => {} }, registerMany: (cs) => { cs.forEach(c => contribs.push(c)); return () => {} },
   registerSettingsPage: (p) => { settingsPage = p; return () => {} },
-  rest: async (p, o) => { log.requests.push(['rest', p, o && o.method]); if (restMode === 'fail') { const e = new Error('404'); throw e } if (p === '/fleet') return LIVE; if (p.startsWith('/feed')) return { items: /since=0\b/.test(p) ? [{ seq: 1, ts: LIVE.ts, kind: 'state', profile: 'chief', text: 'chief: idle → working' }] : [] }; if (p.startsWith('/history')) return { points: [{ ts: LIVE.ts - 600, states: { chief: 'working', sourcer: 'task' }, tpm: { chief: 1200 } }, { ts: LIVE.ts, states: { chief: 'working', sourcer: 'blocked' }, tpm: {} }] }; if (p.startsWith('/unit/')) return { ...LIVE.units.chief, recent_tool_calls: [{ tool: 'read_file', target: '/x' }], recent_sessions: [{ id: 's1', title: 'A', tokens: 10, estimated_cost_usd: 0.1 }, { id: 's2', title: 'B', tokens: 5, estimated_cost_usd: 0.05 }] }; if (p === '/task') return { ok: true, task_id: 'T9' }; throw new Error('404') },
+  rest: async (p, o) => { log.requests.push(['rest', p, o && o.method]); if (restMode === 'unauthorized') { const e = new Error('401: {"error":"unauthenticated","reason":"no_cookie"}'); e.status = 401; throw e } if (restMode === 'fail') { const e = new Error('404: Plugin not found'); e.status = 404; throw e } if (p === '/fleet') return LIVE; if (p.startsWith('/feed')) return { items: /since=0\b/.test(p) ? [{ seq: 1, ts: LIVE.ts, kind: 'state', profile: 'chief', text: 'chief: idle → working' }] : [] }; if (p.startsWith('/history')) return { points: [{ ts: LIVE.ts - 600, states: { chief: 'working', sourcer: 'task' }, tpm: { chief: 1200 } }, { ts: LIVE.ts, states: { chief: 'working', sourcer: 'blocked' }, tpm: {} }] }; if (p.startsWith('/unit/')) return { ...LIVE.units.chief, recent_tool_calls: [{ tool: 'read_file', target: '/x' }], recent_sessions: [{ id: 's1', title: 'A', tokens: 10, estimated_cost_usd: 0.1 }, { id: 's2', title: 'B', tokens: 5, estimated_cost_usd: 0.05 }] }; if (p === '/task') return { ok: true, task_id: 'T9' }; throw new Error('404') },
   socket: () => () => {}
 }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -137,6 +137,21 @@ assert(log.requests.filter(r => r[0] === 'rest' && r[1] === '/fleet').length > b
 // palette: jump to the unit that needs me
 contribs.find(c => c.area === 'palette' && c.data.id === 'cockpit.needs-you').data.run()
 assert(T.$selected.get() === 'editor' && log.navigate.includes('/cockpit'), 'palette "needs me" selects the blocked unit and navigates')
+
+// ── 2b. sensor auth lane: 401 falls back cleanly, then recovers ──────────────────────────
+// A gated remote (auth_required) answers an unauthenticated REST call with
+// 401 {error:unauthenticated,reason:no_cookie}; a namespace/manifest mismatch
+// answers 404. Either way the live door must NOT crash or latch forever — it
+// falls back to the RPC picture now and re-engages live the moment the sensor is
+// reachable again (this is what lets the badge flip rpc → live on the laptop).
+const liveFleets = () => log.requests.filter(r => r[0] === 'rest' && r[1] === '/fleet').length
+restMode = 'unauthorized'; const before401 = liveFleets(); await sleep(200)
+assert(T.$mode.get() === 'rpc', 'sensor 401 (auth) → rpc fallback, no crash')
+assert(liveFleets() > before401, 'still polling /fleet after a 401 (does not latch on auth failure)')
+await act(async () => { await sleep(30) })
+assert(/RPC-only picture/.test(rootEl.textContent), 'rpc banner shown during the auth failure')
+restMode = 'live'; await sleep(200)
+assert(T.$mode.get() === 'live' && T.$snap.get().units.chief, 'sensor reachable again → live door re-engages')
 
 // ── 3. rpc door ─────────────────────────────────────────────────────────────────────────
 restMode = 'fail'; await sleep(200)
