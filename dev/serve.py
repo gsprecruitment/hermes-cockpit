@@ -45,7 +45,14 @@ def main() -> None:
         plugin_api._sensor.start()
 
     app = FastAPI(title="hermes-cockpit dev")
-    app.include_router(plugin_api.router, prefix="/api/plugins/hermes-cockpit")
+    # Mount under the namespace the desktop half actually calls — derived from the
+    # manifest `name`, the same field the gateway's plugin discovery uses, so the
+    # harness cannot silently test a namespace the real install never serves.
+    import json
+
+    manifest = json.loads((ROOT / "dashboard" / "manifest.json").read_text(encoding="utf-8"))
+    prefix = f"/api/plugins/{manifest['name']}"
+    app.include_router(plugin_api.router, prefix=prefix)
     app.mount("/desktop", StaticFiles(directory=str(ROOT / "desktop")), name="desktop")
     app.mount("/dev", StaticFiles(directory=str(ROOT / "dev")), name="dev")
 

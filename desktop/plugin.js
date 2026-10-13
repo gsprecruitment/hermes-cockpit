@@ -563,7 +563,7 @@ function Page({ ctx }) {
     jsx(MissionBar, { ctx }),
     jsx(GroupRail, {}),
     mode === 'demo' && jsx('div', { style: { padding: '4px 12px', fontSize: 11, color: 'var(--ui-warning)' }, children: prefs.demo ? 'Demo data (Settings → Plugins → Hermes Cockpit to turn off).' : 'Showing demo data: the sensor is not enabled on this backend and RPC is unreachable. Enable `hermes-cockpit` in plugins.enabled for the live picture.' }),
-    mode === 'rpc' && jsx('div', { style: { padding: '4px 12px', fontSize: 11, color: 'var(--ui-text-secondary)' }, children: 'RPC-only picture: sessions per profile, no board/cost. Enable the `hermes-cockpit` python half in plugins.enabled for tasks, cost, cron and anomalies.' }),
+    mode === 'rpc' && jsx('div', { style: { padding: '4px 12px', fontSize: 11, color: 'var(--ui-text-secondary)' }, children: 'RPC-only picture: sessions per profile, no board/cost. The sensor half is not reachable at /api/plugins/hermes-cockpit — add `hermes-cockpit` to plugins.enabled on the backend, and check its dashboard/manifest.json `name` equals `hermes-cockpit` (the API mounts under /api/plugins/<manifest name>/).' }),
     jsxs('div', { style: { display: 'flex', flex: 1, minHeight: 0, flexDirection: narrow ? 'column' : 'row' }, children: [
       jsxs('div', { style: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }, children: [jsx(Constellation, { ctx }), prefs.showLanes && jsx(Swimlanes, {})] }),
       jsxs('div', { style: { width: narrow ? 'auto' : 340, borderLeft: narrow ? 'none' : '1px solid var(--ui-border)', borderTop: narrow ? '1px solid var(--ui-border)' : 'none', display: 'flex', flexDirection: 'column', minHeight: narrow ? 260 : 0 }, children: [jsx(Drawer, { ctx }), jsx(Feed, {})] })
