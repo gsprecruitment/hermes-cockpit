@@ -38,7 +38,8 @@ function useAtom(a) {
 
 const DEFAULT_PREFS = {
   pollMs: 4000, showLanes: true, laneMinutes: 60, density: 'comfortable', particles: true,
-  reducedMotion: false, demo: false, showIdle: true, laneBy: 'group', focusOnNeedsYou: true
+  reducedMotion: false, demo: false, showIdle: true, laneBy: 'group', focusOnNeedsYou: true,
+  theme: 'gsp', view: 'grid'   // theme: 'gsp' house style | 'app' host variables; view: 'grid' | 'constellation'
 }
 const $prefs = atom(DEFAULT_PREFS)
 const $snap = atom(null)       // fleet snapshot (sensor shape, also produced by rpc/demo adapters)
@@ -57,20 +58,21 @@ function fmtUsd(n) { return n == null ? '—' : `$${Number(n).toFixed(2)}` }
 function fmtClock(ts) { try { return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) } catch (e) { return '' } }
 function notice(text, kind = 'info') { $notice.set({ text, kind, at: Date.now() }) }
 
-// ── colours: semantic state colours come from theme variables with sane fallbacks ──────
-const VAR_FALLBACK = { // VAR_FALLBACK: only used when a theme variable is missing (never in the app)
-  '--ui-text': '#e6e6e6', '--ui-text-secondary': '#9aa0a6', '--ui-accent': '#7aa2ff', '--ui-border': 'rgba(127,127,127,.25)', // VAR_FALLBACK
-  '--ui-success': '#38c172', '--ui-warning': '#f0b429', '--ui-danger': '#ef4e4e', '--ui-info': '#3db8f5', '--ui-surface': 'rgba(127,127,127,.08)' // VAR_FALLBACK
+// ── colours: everything resolves through --ck-* custom properties (see CK_CSS) ──────────
+const VAR_FALLBACK = { // VAR_FALLBACK: only used when a custom property is missing (never in the app)
+  '--ck-text': '#e6e6e6', '--ck-muted': '#9aa0a6', '--ck-accent': '#7aa2ff', '--ck-line': 'rgba(127,127,127,.25)', '--ck-tip': 'rgba(60,60,60,.9)', // VAR_FALLBACK
+  '--ck-s-blocked': '#f5c518', '--ck-s-failed': '#ef4e4e', '--ck-s-task': '#f2f5fa', '--ck-s-working': '#8fb3e8', '--ck-s-idle': '#5b6b85', '--ck-s-off': '#3a4760', // VAR_FALLBACK
+  '--ck-sans': 'system-ui, sans-serif', '--ck-mono': 'ui-monospace, monospace'
 }
 function cssVar(el, name) {
   try { const v = getComputedStyle(el).getPropertyValue(name).trim(); if (v) return v } catch (e) { /* no DOM */ }
   return VAR_FALLBACK[name] || '#888'
 }
 function palette(el) {
+  const g = (n) => cssVar(el, n)
   return {
-    text: cssVar(el, '--ui-text'), muted: cssVar(el, '--ui-text-secondary'), accent: cssVar(el, '--ui-accent'), border: cssVar(el, '--ui-border'),
-    blocked: cssVar(el, '--ui-danger'), failed: cssVar(el, '--ui-warning'), task: cssVar(el, '--ui-accent'), working: cssVar(el, '--ui-success'),
-    idle: cssVar(el, '--ui-text-secondary'), off: cssVar(el, '--ui-border'), info: cssVar(el, '--ui-info')
+    text: g('--ck-text'), muted: g('--ck-muted'), accent: g('--ck-accent'), border: g('--ck-line'), tip: g('--ck-tip'), sans: g('--ck-sans'), mono: g('--ck-mono'),
+    blocked: g('--ck-s-blocked'), failed: g('--ck-s-failed'), task: g('--ck-s-task'), working: g('--ck-s-working'), idle: g('--ck-s-idle'), off: g('--ck-s-off')
   }
 }
 
@@ -129,33 +131,66 @@ function totalsOf(units) {
   }
 }
 
-// Demo fleet: deterministic, slowly evolving, so the page is never blank (and screenshots are stable).
+// Demo fleet: ~47 profiles in five groups, deterministic (seeded) and slowly evolving, so the page is never
+// blank and screenshots are stable. First tick: about 3 need you, 1 failed, 6 working, 4 on a task.
 const DEMO_GROUPS = [
-  { id: 'leadership', label: 'Leadership', profiles: ['chief', 'coordinator'] },
-  { id: 'recruiting', label: 'Recruiting', profiles: ['sourcer', 'screener', 'outreach', 'market-analyst'] },
-  { id: 'content', label: 'Content', profiles: ['editor', 'content-creator', 'copy-engineer'] },
-  { id: 'engineering', label: 'Engineering', profiles: ['engineering-lead', 'plugin-engineer', 'tech-planner'] },
-  { id: 'ops', label: 'Ops', profiles: ['backoffice', 'finance', 'assistant'] }
+  { id: 'leadership', label: 'Leadership', profiles: ['chief-of-staff', 'coordinator', 'strategist', 'planner', 'board-liaison', 'risk-officer'] },
+  { id: 'operations', label: 'Operations', profiles: ['kpi-reporter', 'invoice-matcher', 'backoffice', 'finance', 'contract-clerk', 'payroll-checker', 'compliance-watch', 'scheduler', 'inbox-triage', 'vendor-desk'] },
+  { id: 'recruiting', label: 'Recruiting', profiles: ['sourcer-embedded', 'sourcer-cpp', 'sourcer-ot-security', 'screener', 'outreach', 'candidate-care', 'market-analyst', 'vacancy-writer', 'cv-formatter', 'interview-planner', 'reference-checker', 'talent-pool'] },
+  { id: 'engineering', label: 'Engineering', profiles: ['engineering-lead', 'plugin-engineer', 'backend-engineer', 'frontend-engineer', 'mobile-engineer', 'qa-runner', 'security-reviewer', 'devops-bot', 'tech-planner', 'code-reviewer'] },
+  { id: 'sales', label: 'Sales', profiles: ['account-manager', 'lead-finder', 'proposal-writer', 'crm-hygiene', 'client-researcher', 'pipeline-analyst', 'renewal-watch', 'client-outreach'] }
 ]
+const DEMO_START = { // everything not listed starts idle
+  blocked: ['chief-of-staff', 'invoice-matcher', 'outreach'], failed: ['kpi-reporter'],
+  task: ['engineering-lead', 'sourcer-cpp', 'backend-engineer', 'lead-finder'],
+  working: ['sourcer-embedded', 'screener', 'plugin-engineer', 'account-manager', 'proposal-writer', 'backoffice'],
+  off: ['risk-officer', 'talent-pool', 'renewal-watch']
+}
+const DEMO_TITLES = ['Morning brief', 'Source embedded engineers', 'Draft outreach batch', 'Review PR #5', 'Reconcile invoices', 'Screen new CVs', 'Weekly KPI sheet', 'Update CRM contacts', 'Plan sprint', 'Check vacancy fit']
+const DEMO_MODELS = ['glm-5.3-flash', 'deepseek-v4-flash', 'claude-fable-5-1', 'qwen-3-max']
 let demoSeed = 7
 function rnd() { demoSeed = (demoSeed * 1103515245 + 12345) & 0x7fffffff; return demoSeed / 0x7fffffff }
+const demoId = () => 'T' + (100 + Math.round(rnd() * 800))
 function demoSnap(prev) {
   const now = Date.now() / 1000
   const units = prev ? JSON.parse(JSON.stringify(prev.units)) : {}
   const all = ['default'].concat(DEMO_GROUPS.flatMap(g => g.profiles))
   all.forEach((p, i) => {
-    if (!units[p]) units[p] = { profile: p, group: (DEMO_GROUPS.find(g => g.profiles.includes(p)) || { id: 'other' }).id, state: i % 3 === 0 ? 'working' : 'idle', since: now - rnd() * 3000, is_owner: p === 'default', display_name: '', description: '', model: ['glm-5.3-flash', 'deepseek-v4-flash', 'claude-fable-5-1'][i % 3], heartbeat_age_s: 4, lease_count: 0, active_sessions: 0, delegations: 0, tokens_today: Math.round(rnd() * 400000), cost_today_usd: rnd() * 6, sessions_today: 1 + Math.round(rnd() * 20), tokens_per_min: 0, blocked: [], failed: [], anomalies: [], cron: { jobs: Math.round(rnd() * 4), running: 0, errors_recent: 0, paused: 0 }, task: null, latest_session: { id: 's' + i, title: ['Morning brief', 'Source embedded engineers', 'Draft outreach', 'Review PR #5', 'Reconcile invoices'][i % 5], model: null, last_activity_at: now - rnd() * 600, tool_calls: Math.round(rnd() * 30), tokens: Math.round(rnd() * 50000) } }
+    if (!units[p]) {
+      const st = Object.keys(DEMO_START).find(k => DEMO_START[k].includes(p)) || 'idle'
+      const title = DEMO_TITLES[i % DEMO_TITLES.length]; const active = st === 'working' || st === 'task'
+      units[p] = { profile: p, group: (DEMO_GROUPS.find(g => g.profiles.includes(p)) || { id: 'other' }).id, state: st, since: now - 60 - rnd() * 3000, is_owner: p === 'default', display_name: '', description: '', model: DEMO_MODELS[i % DEMO_MODELS.length], heartbeat_age_s: 4, lease_count: active ? 1 : 0, active_sessions: active ? 1 : 0, delegations: 0, tokens_today: Math.round(rnd() * 400000), cost_today_usd: rnd() * 6, sessions_today: 1 + Math.round(rnd() * 20), tokens_per_min: 0, blocked: [], failed: [], anomalies: [], cron: { jobs: Math.round(rnd() * 4), running: 0, errors_recent: 0, paused: 0 }, task: null, latest_session: { id: 's' + i, title, model: null, last_activity_at: now - (active ? rnd() * 60 : 300 + rnd() * 7000), tool_calls: Math.round(rnd() * 30), tokens: Math.round(rnd() * 50000) } }
+      const u = units[p]
+      if (st === 'task') u.task = { id: demoId(), title, started_at: u.since, created_by: 'agent:chief-of-staff', board: 'demo' }
+      if (st === 'blocked') u.blocked = [{ id: demoId(), title: 'Approve: ' + title, block_kind: 'needs_human', created_at: u.since }]
+      if (st === 'failed') u.failed = [{ id: demoId(), title: 'Failed: ' + title, created_at: u.since }]
+    }
     const u = units[p]; const r = rnd()
     if (u.state === 'idle' && r < 0.04) { u.state = 'working'; u.since = now }
-    else if (u.state === 'working' && r < 0.03) { u.state = 'task'; u.since = now; const by = DEMO_GROUPS[0].profiles[0]; u.task = { id: 'T' + Math.round(rnd() * 900), title: u.latest_session.title, started_at: now, created_by: 'agent:' + by, board: 'demo' }; u.delegated_by = by }
-    else if ((u.state === 'working' || u.state === 'task') && r > 0.975) { u.state = 'blocked'; u.since = now; u.blocked = [{ id: 'T' + Math.round(rnd() * 900), title: 'Approve: ' + u.latest_session.title, block_kind: 'needs_human', created_at: now }] }
+    else if (u.state === 'working' && r < 0.03) { u.state = 'task'; u.since = now; const by = DEMO_GROUPS[0].profiles[0]; u.task = { id: demoId(), title: u.latest_session.title, started_at: now, created_by: 'agent:' + by, board: 'demo' }; u.delegated_by = by }
+    else if ((u.state === 'working' || u.state === 'task') && r > 0.985) { u.state = 'failed'; u.since = now; u.task = null; u.delegated_by = null; u.failed = [{ id: demoId(), title: 'Failed: ' + u.latest_session.title, created_at: now }] }
+    else if ((u.state === 'working' || u.state === 'task') && r > 0.975) { u.state = 'blocked'; u.since = now; u.blocked = [{ id: demoId(), title: 'Approve: ' + u.latest_session.title, block_kind: 'needs_human', created_at: now }] }
     else if (u.state === 'blocked' && r > 0.95) { u.state = 'idle'; u.since = now; u.blocked = []; u.task = null; u.delegated_by = null }
+    else if (u.state === 'failed' && r > 0.96) { u.state = 'idle'; u.since = now; u.failed = [] }
     else if ((u.state === 'working' || u.state === 'task') && r > 0.93) { u.state = 'idle'; u.since = now; u.task = null; u.delegated_by = null }
-    if (u.state === 'working' || u.state === 'task') { const rate = 800 + rnd() * 4000; u.tokens_per_min = Math.round(rate); u.tokens_today += Math.round(rate / 15); u.cost_today_usd += rate / 15 * 0.0000025 }
+    if (u.state === 'working' || u.state === 'task') { const rate = 800 + rnd() * 4000; u.tokens_per_min = Math.round(rate); u.tokens_today += Math.round(rate / 15); u.cost_today_usd += rate / 15 * 0.0000025; u.latest_session.last_activity_at = now }
     else u.tokens_per_min = Math.max(0, Math.round(u.tokens_per_min * 0.6))
     u.delegations = u.state === 'task' ? 1 + Math.round(rnd() * 2) : 0
   })
   return { rev: (prev ? prev.rev : 0) + 1, ts: now, mode: 'demo', title: 'Hermes Cockpit · demo', owner: 'default', spend_ceiling_usd: 60, groups: DEMO_GROUPS.concat([{ id: 'other', label: 'You', profiles: ['default'] }]), units, totals: totalsOf(units), pipeline: { todo: 4, ready: 2, running: 3, blocked: 2, review: 1, done: 41 }, boards: ['demo'], signals: [{ id: 'sync', label: 'sync tick', age_s: 120, ok: true, warn_after_s: 900 }], gateway: { heartbeat_age_s: 3 } }
+}
+// Backfill ~an hour of history for the demo so sparklines and lanes have a past (no randomness: stable screenshots).
+function demoHistory(snap) {
+  const pts = []; const hash = (p, k) => { let h = k * 2654435761; for (let i = 0; i < p.length; i++) h = (h ^ p.charCodeAt(i)) * 16777619 >>> 0; return h % 100 }
+  for (let k = 30; k >= 1; k--) {
+    const states = {}, tpm = {}
+    unitsOf(snap).forEach(u => {
+      const live = u.state === 'working' || u.state === 'task' || u.state === 'blocked' || u.state === 'failed'
+      if (live && k < 6 + hash(u.profile, 1) % 24) { states[u.profile] = u.state; if (u.state === 'working' || u.state === 'task') tpm[u.profile] = 600 + hash(u.profile, k) * 40 } else states[u.profile] = u.state === 'off' ? 'off' : 'idle'
+    })
+    pts.push({ ts: snap.ts - k * 120, states, tpm })
+  }
+  return pts
 }
 
 // Diff two snapshots into feed rows (used by the rpc/demo adapters; live has a server feed).
@@ -201,7 +236,8 @@ function startPoller(ctx) {
   function apply(snap, feedRows) { $snap.set(snap); if (feedRows.length) $feed.set($feed.get().concat(feedRows).slice(-500)); pushHistory(snap) }
   function pushHistory(snap) {
     const states = {}, tpm = {}; unitsOf(snap).forEach(u => { states[u.profile] = u.state; if (u.tokens_per_min) tpm[u.profile] = u.tokens_per_min })
-    const h = $history.get().concat([{ ts: snap.ts, states, tpm }]); const cutoff = snap.ts - $prefs.get().laneMinutes * 60 - 60
+    const past = snap.mode === 'demo' && $history.get().length < 3 ? demoHistory(snap) : $history.get()
+    const h = past.concat([{ ts: snap.ts, states, tpm }]); const cutoff = snap.ts - $prefs.get().laneMinutes * 60 - 60
     $history.set(h.filter(p => p.ts >= cutoff))
   }
   // Push from the sensor → fetch now (no faster than once per second).
@@ -236,6 +272,11 @@ const actions = {
   async createTask(ctx, assignee, title, description) {
     try { const r = await ctx.rest('/task', { method: 'POST', body: { assignee, title, description } }); notice(`card ${r.task_id} → ${assignee}`); return r }
     catch (e) { notice(`task refused: ${e.message || e}`, 'error'); return null }
+  },
+  handCard(profile) { // the create form lives in the drawer: select the unit, then ask it to focus the form
+    $selected.set(profile)
+    if (($snap.get() || {}).mode !== 'live') return notice('Handing a card needs the live sensor', 'warn')
+    $focusCreate.set(Date.now())
   },
   copy(text) { try { navigator.clipboard.writeText(text); notice('copied') } catch (e) { notice('clipboard unavailable', 'error') } }
 }
@@ -297,7 +338,7 @@ function Constellation({ ctx, onPick }) {
       const L = layout(view, w, h, pf.showIdle)
       const motion = pf.reducedMotion ? 0 : 1
       // group arcs + labels
-      ctx2.lineWidth = 1; ctx2.strokeStyle = P.border; ctx2.font = '11px system-ui, sans-serif'; ctx2.fillStyle = P.muted
+      ctx2.lineWidth = 1; ctx2.strokeStyle = P.border; ctx2.font = `11px ${P.sans}`; ctx2.fillStyle = P.muted
       L.arcs.forEach(g => {
         ctx2.beginPath(); ctx2.arc(L.cx, L.cy, L.R + 26, g.a0 + 0.03, g.a1 - 0.03); ctx2.stroke()
         const am = (g.a0 + g.a1) / 2; const lx = L.cx + Math.cos(am) * (L.R + 44), ly = L.cy + Math.sin(am) * (L.R + 44)
@@ -342,19 +383,19 @@ function Constellation({ ctx, onPick }) {
         if ((u.anomalies || []).length) { ctx2.fillStyle = P.failed; ctx2.beginPath(); ctx2.arc(sm.x + r * 0.8, sm.y - r * 0.8, 3.2, 0, Math.PI * 2); ctx2.fill() }
         if (selected === u.profile || A.hover === u.profile) { ctx2.strokeStyle = P.text; ctx2.lineWidth = 1; ctx2.setLineDash([2, 3]); ctx2.beginPath(); ctx2.arc(sm.x, sm.y, r + 9, 0, Math.PI * 2); ctx2.stroke(); ctx2.setLineDash([]) }
         // label
-        ctx2.fillStyle = P.text; ctx2.font = `${u.profile === view.owner ? 12 : 11}px system-ui, sans-serif`; ctx2.textAlign = 'center'
+        ctx2.fillStyle = P.text; ctx2.font = `${u.profile === view.owner ? 12 : 11}px ${P.sans}`; ctx2.textAlign = 'center'
         const label = u.profile === view.owner ? (u.display_name || u.profile) : u.profile
         if (pf.density !== 'compact' || u.state !== 'idle' || selected === u.profile) ctx2.fillText(label, sm.x, sm.y + r + 13)
-        if ((u.state === 'working' || u.state === 'task') && u.tokens_per_min) { ctx2.fillStyle = P.muted; ctx2.font = '10px ui-monospace, monospace'; ctx2.fillText(`${fmtTok(u.tokens_per_min)}/min`, sm.x, sm.y + r + 25) }
+        if ((u.state === 'working' || u.state === 'task') && u.tokens_per_min) { ctx2.fillStyle = P.muted; ctx2.font = `10px ${P.mono}`; ctx2.fillText(`${fmtTok(u.tokens_per_min)}/min`, sm.x, sm.y + r + 25) }
         ctx2.globalAlpha = 1
       })
       // hover tooltip
       if (A.hover && view.units[A.hover] && A.smooth[A.hover]) {
         const u = view.units[A.hover], sm = A.smooth[A.hover]
         const lines = [`${u.profile} · ${STATE_LABEL[u.state]}${u.since ? ' · ' + fmtAge(view.ts - u.since) : ''}`, u.task ? `task: ${u.task.title}` : (u.latest_session && u.latest_session.title ? `last: ${u.latest_session.title}` : ''), u.model ? `model: ${u.model}` : '', u.cost_today_usd ? `today: ${fmtTok(u.tokens_today)} tok · ${fmtUsd(u.cost_today_usd)}` : ''].filter(Boolean)
-        ctx2.font = '11px system-ui, sans-serif'; const tw = Math.max(...lines.map(l => ctx2.measureText(l).width)) + 16; const th = lines.length * 15 + 10
+        ctx2.font = `11px ${P.sans}`; const tw = Math.max(...lines.map(l => ctx2.measureText(l).width)) + 16; const th = lines.length * 15 + 10
         const tx = Math.min(w - tw - 4, Math.max(4, sm.x + 14)), ty = Math.max(4, sm.y - th - 8)
-        ctx2.fillStyle = P.border; ctx2.fillRect(tx, ty, tw, th); ctx2.strokeStyle = P.muted; ctx2.strokeRect(tx + 0.5, ty + 0.5, tw - 1, th - 1)
+        ctx2.fillStyle = P.tip; ctx2.fillRect(tx, ty, tw, th); ctx2.strokeStyle = P.muted; ctx2.strokeRect(tx + 0.5, ty + 0.5, tw - 1, th - 1)
         ctx2.fillStyle = P.text; ctx2.textAlign = 'left'; lines.forEach((l, i) => ctx2.fillText(l, tx + 8, ty + 16 + i * 15))
       }
       raf = requestAnimationFrame(draw)
@@ -396,7 +437,7 @@ function Swimlanes() {
       const P = palette(c); const now = snap.ts; const span = prefs.laneMinutes * 60; const x0 = 110, x1 = w - 8
       const X = (t) => x0 + ((t - (now - span)) / span) * (x1 - x0)
       const rowH = Math.max(14, Math.min(26, (h - 18) / Math.max(1, rows.length)))
-      ctx2.font = '11px system-ui, sans-serif'
+      ctx2.font = `11px ${P.sans}`
       rows.forEach((row, i) => {
         const y = 4 + i * rowH
         ctx2.fillStyle = P.muted; ctx2.textAlign = 'right'; ctx2.fillText(row.label.slice(0, 16), x0 - 8, y + rowH * 0.65)
@@ -415,7 +456,7 @@ function Swimlanes() {
         })
       })
       // time ticks
-      ctx2.fillStyle = P.muted; ctx2.textAlign = 'center'; ctx2.font = '10px ui-monospace, monospace'
+      ctx2.fillStyle = P.muted; ctx2.textAlign = 'center'; ctx2.font = `10px ${P.mono}`
       for (let m = 0; m <= prefs.laneMinutes; m += Math.max(5, Math.round(prefs.laneMinutes / 6))) { const x = X(now - m * 60); ctx2.fillRect(x, h - 14, 1, 4); ctx2.fillText(m === 0 ? 'now' : `-${m}m`, x, h - 2) }
       if (replayT != null) { const x = X(replayT); ctx2.fillStyle = P.text; ctx2.fillRect(x, 0, 1.5, h - 16); ctx2.textAlign = 'left'; ctx2.fillText(fmtClock(replayT), Math.min(x + 4, w - 70), 10) }
     }
@@ -429,144 +470,365 @@ function Swimlanes() {
     const frac = Math.max(0, Math.min(1, (x - x0) / (x1 - x0))); $replayT.set(snap.ts - prefs.laneMinutes * 60 * (1 - frac))
   }
   const drag = useRef(false)
-  return jsx('div', { ref: wrap, className: 'ck-lanes', style: { height: Math.max(90, Math.min(220, 20 + rows.length * 22)), position: 'relative', borderTop: '1px solid var(--ui-border)' }, children:
-    jsx('canvas', { ref, 'aria-label': 'Swimlanes', role: 'img', style: { display: 'block', cursor: 'ew-resize' },
-      onMouseDown: (e) => { drag.current = true; scrub(e) }, onMouseMove: (e) => { if (drag.current) scrub(e) },
-      onMouseUp: (e) => { drag.current = false }, onMouseLeave: () => { drag.current = false }, onDoubleClick: () => $replayT.set(null) }) })
+  return jsxs('div', { className: 'ck-lanes-box', children: [
+    jsxs('div', { className: 'ck-lh', children: [`last ${prefs.laneMinutes} min`, ...STATES.map(s => jsxsk('span', { key: s, className: `ck-leg ck-st-${s}`, children: [jsx(Glyph, { s }), STATE_LABEL[s]] }))] }),
+    jsx('div', { ref: wrap, className: 'ck-lanes', style: { height: Math.max(90, Math.min(220, 20 + rows.length * 22)), position: 'relative' }, children:
+      jsx('canvas', { ref, 'aria-label': 'Swimlanes', role: 'img', style: { display: 'block', cursor: 'ew-resize' },
+        onMouseDown: (e) => { drag.current = true; scrub(e) }, onMouseMove: (e) => { if (drag.current) scrub(e) },
+        onMouseUp: (e) => { drag.current = false }, onMouseLeave: () => { drag.current = false }, onDoubleClick: () => $replayT.set(null) }) })
+  ] })
 }
 
-// ── mission bar, rail, drawer, feed ─────────────────────────────────────────────────────
-const S = {
-  bar: { display: 'flex', alignItems: 'center', gap: 14, padding: '8px 12px', borderBottom: '1px solid var(--ui-border)', fontSize: 12, color: 'var(--ui-text-secondary)', flexWrap: 'wrap' },
-  chip: (active) => ({ padding: '2px 8px', borderRadius: 999, border: '1px solid var(--ui-border)', cursor: 'pointer', background: active ? 'var(--ui-accent)' : 'transparent', color: active ? 'var(--ui-text-on-accent, #000)' : 'inherit', fontSize: 11 }),
-  kpi: { display: 'flex', flexDirection: 'column', lineHeight: 1.1 }, kpiV: { color: 'var(--ui-text)', fontSize: 15, fontVariantNumeric: 'tabular-nums' }, kpiL: { fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em' },
+// ── house style: one injected stylesheet; palette lives in CSS custom properties ─────────
+// theme 'gsp' = navy/gold house style; theme 'app' maps the same names onto the app's --ui-* variables.
+const CK_CSS = `
+.hermes-cockpit[data-ck-theme=gsp]{--ck-bg:#0A1628;--ck-surface:#0F1F38;--ck-tip:#16294A;--ck-accent:#FAC800;--ck-on-accent:#0A1628;} /* VAR_FALLBACK */
+.hermes-cockpit[data-ck-theme=gsp]{--ck-text:#E8ECF3;--ck-muted:#8B97AD;--ck-line:rgba(255,255,255,.08);--ck-line-gold:rgba(250,200,0,.10);} /* VAR_FALLBACK */
+.hermes-cockpit[data-ck-theme=gsp]{--ck-s-blocked:#FAC800;--ck-s-failed:#FF5D5D;--ck-s-task:#F2F5FA;--ck-s-working:#8FB3E8;--ck-s-idle:#5B6B85;--ck-s-off:#3A4760;} /* VAR_FALLBACK */
+.hermes-cockpit[data-ck-theme=gsp]{--ck-serif:'Newsreader',Georgia,'Times New Roman',serif;--ck-sans:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;--ck-mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+.hermes-cockpit[data-ck-theme=app]{--ck-bg:transparent;--ck-surface:var(--ui-surface);--ck-tip:var(--ui-border);--ck-accent:var(--ui-accent);--ck-on-accent:var(--ui-text-on-accent,#000);} /* VAR_FALLBACK */
+.hermes-cockpit[data-ck-theme=app]{--ck-text:var(--ui-text);--ck-muted:var(--ui-text-secondary);--ck-line:var(--ui-border);--ck-line-gold:var(--ui-border);}
+.hermes-cockpit[data-ck-theme=app]{--ck-s-blocked:var(--ui-danger);--ck-s-failed:var(--ui-warning);--ck-s-task:var(--ui-accent);--ck-s-working:var(--ui-success);--ck-s-idle:var(--ui-text-secondary);--ck-s-off:var(--ui-border);}
+.hermes-cockpit[data-ck-theme=app]{--ck-serif:system-ui,sans-serif;--ck-sans:system-ui,sans-serif;--ck-mono:ui-monospace,monospace;}
+.hermes-cockpit{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--ck-bg);color:var(--ck-text);font:13px/1.35 var(--ck-sans);}
+.hermes-cockpit *{box-sizing:border-box;}
+.hermes-cockpit button{font:inherit;color:inherit;cursor:pointer;border-radius:3px;}
+.hermes-cockpit button:focus-visible,.hermes-cockpit input:focus-visible,.hermes-cockpit select:focus-visible{outline:2px solid var(--ck-accent);outline-offset:1px;}
+.hermes-cockpit .ck-st-blocked{--ck-sc:var(--ck-s-blocked);} .hermes-cockpit .ck-st-failed{--ck-sc:var(--ck-s-failed);} .hermes-cockpit .ck-st-task{--ck-sc:var(--ck-s-task);}
+.hermes-cockpit .ck-st-working{--ck-sc:var(--ck-s-working);} .hermes-cockpit .ck-st-idle{--ck-sc:var(--ck-s-idle);} .hermes-cockpit .ck-st-off{--ck-sc:var(--ck-s-off);}
+.ck-g{color:var(--ck-sc);display:inline-block;min-width:1em;text-align:center;}
+.ck-mono{font-family:var(--ck-mono);}
+.ck-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}
+.ck-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px 18px;padding:10px 14px;background:var(--ck-surface);border-bottom:1px solid var(--ck-line-gold);}
+.ck-brand{display:flex;align-items:center;gap:10px;}
+.ck-title{font:600 19px var(--ck-serif);letter-spacing:.01em;}
+.ck-seg{display:inline-flex;border:1px solid var(--ck-line);border-radius:3px;overflow:hidden;}
+.ck-seg span{padding:2px 9px;font:600 10px var(--ck-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ck-muted);}
+.ck-seg span.on{background:var(--ck-accent);color:var(--ck-on-accent);}
+.ck-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.ck-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border:1px solid var(--ck-line);border-radius:999px;background:transparent;font-size:11px;letter-spacing:.05em;text-transform:uppercase;}
+.ck-chip:hover{border-color:var(--ck-accent);}
+.ck-chip .n{font-family:var(--ck-mono);font-weight:600;}
+.ck-chip.dim{opacity:.45;}
+.ck-chip.sel{border-color:var(--ck-accent);color:var(--ck-accent);}
+.ck-chip.hot{background:var(--ck-s-blocked);border-color:var(--ck-s-blocked);color:var(--ck-on-accent);font-weight:600;}
+.ck-chip.hot .ck-g{color:inherit;}
+.ck-chip.bad{border-color:var(--ck-s-failed);color:var(--ck-s-failed);}
+.ck-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ck-s-failed);}
+.ck-kpi{display:flex;flex-direction:column;line-height:1.15;}
+.ck-kpi b{font:600 14px var(--ck-mono);font-variant-numeric:tabular-nums;}
+.ck-kpi span{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ck-muted);}
+.ck-kpi.warn b{color:var(--ck-accent);} .ck-kpi.bad b{color:var(--ck-s-failed);}
+.ck-gauge{width:100%;min-width:90px;height:3px;margin-top:4px;background:var(--ck-line);border-radius:3px;overflow:hidden;}
+.ck-gauge i{display:block;height:100%;background:var(--ck-accent);}
+.ck-gauge.over i{background:var(--ck-s-failed);}
+.ck-note{padding:4px 14px;font-size:11px;color:var(--ck-muted);}
+.ck-note.demo{color:var(--ck-accent);}
+.ck-toast{font-size:12px;} .ck-toast.error{color:var(--ck-s-failed);} .ck-toast.warn{color:var(--ck-accent);}
+.ck-rail{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--ck-line);font-size:11px;}
+.ck-sp{flex:1;}
+.ck-board{color:var(--ck-muted);font-family:var(--ck-mono);font-size:11px;}
+.ck-input{background:var(--ck-surface);border:1px solid var(--ck-line);color:var(--ck-text);border-radius:3px;padding:4px 8px;font:12px var(--ck-sans);min-width:170px;}
+.ck-btn{padding:4px 10px;border:1px solid var(--ck-line);background:transparent;font-size:12px;}
+.ck-btn:hover{border-color:var(--ck-accent);}
+.ck-btn.sm{padding:2px 8px;font-size:11px;}
+.ck-btn.on{border-color:var(--ck-accent);color:var(--ck-accent);}
+.ck-btn.gold{background:var(--ck-accent);border-color:var(--ck-accent);color:var(--ck-on-accent);font-weight:600;}
+.ck-vt{display:inline-flex;gap:0;}
+.ck-vt .ck-btn:first-child{border-radius:3px 0 0 3px;} .ck-vt .ck-btn:last-child{border-radius:0 3px 3px 0;border-left:0;}
+.ck-queue{padding:10px 14px;background:var(--ck-surface);border-bottom:1px solid var(--ck-line-gold);}
+.ck-qh{font:600 11px var(--ck-sans);letter-spacing:.1em;text-transform:uppercase;color:var(--ck-accent);margin-bottom:8px;}
+.ck-qrow{display:flex;gap:10px;overflow-x:auto;padding-bottom:4px;}
+.ck-card{flex:0 0 270px;display:flex;flex-direction:column;border:1px solid var(--ck-line);border-top:2px solid var(--ck-sc);border-radius:3px;background:var(--ck-bg);}
+.ck-cb{display:flex;flex-direction:column;gap:3px;min-width:0;padding:8px 10px 4px;border:0;background:none;text-align:left;}
+.ck-l1{display:flex;align-items:baseline;gap:6px;min-width:0;}
+.ck-l1 .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ck-l1 .gr{color:var(--ck-muted);font-size:11px;white-space:nowrap;}
+.ck-l1 .age,.ck-l1 .md{margin-left:auto;font:11px var(--ck-mono);color:var(--ck-muted);white-space:nowrap;}
+.ck-l2{display:flex;gap:6px;min-width:0;font-size:12px;}
+.ck-l2 .id{font-family:var(--ck-mono);color:var(--ck-sc);white-space:nowrap;}
+.ck-l2 .tt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ck-muted);}
+.ck-ca{display:flex;gap:6px;padding:4px 10px 8px;}
+.ck-main{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;}
+.ck-grid{flex:1;min-height:0;overflow:auto;padding:12px 14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;align-content:start;}
+.ck-col h3{margin:0 0 8px;padding-bottom:4px;display:flex;align-items:baseline;gap:8px;font:500 16px var(--ck-serif);border-bottom:1px solid var(--ck-line-gold);}
+.ck-col h3 small{font:11px var(--ck-mono);color:var(--ck-muted);}
+.ck-tiles{display:flex;flex-direction:column;gap:4px;}
+.ck-tile{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:1px 8px;width:100%;padding:6px 8px 6px 9px;text-align:left;background:var(--ck-surface);border:1px solid var(--ck-line);border-left:3px solid var(--ck-sc);border-radius:3px;}
+.ck-compact .ck-tile{padding:3px 6px 3px 8px;}
+.ck-tile:hover{border-color:var(--ck-line-gold);border-left-color:var(--ck-sc);background:var(--ck-tip);}
+.ck-tile[aria-pressed=true]{outline:1px solid var(--ck-accent);outline-offset:0;}
+.ck-tile .t1{display:flex;align-items:baseline;gap:6px;min-width:0;}
+.ck-tile .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;}
+.ck-tile .md{font:10px var(--ck-mono);color:var(--ck-muted);white-space:nowrap;}
+.ck-tile .t2{grid-column:1;font:11px var(--ck-mono);color:var(--ck-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ck-tile .t2 .id{color:var(--ck-sc);}
+.ck-tile svg{grid-column:2;grid-row:2;display:block;}
+.ck-compact .ck-tile svg{display:none;}
+.ck-tile.ck-st-idle .nm,.ck-tile.ck-st-off .nm{color:var(--ck-muted);}
+.ck-empty{padding:18px 14px;color:var(--ck-muted);font-size:12px;}
+.ck-lanes-box{border-top:1px solid var(--ck-line-gold);}
+.ck-lh{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;padding:6px 14px 0;font:600 10px var(--ck-sans);letter-spacing:.1em;text-transform:uppercase;color:var(--ck-muted);}
+.ck-leg{display:inline-flex;align-items:center;gap:4px;font-weight:400;letter-spacing:.04em;}
+.ck-side{display:flex;flex-direction:column;min-height:0;background:var(--ck-surface);}
+.ck-drawer{flex:3 1 0;min-height:0;overflow:auto;padding:12px 14px;font-size:12px;}
+.ck-eyebrow{display:flex;align-items:center;gap:8px;font:600 10px var(--ck-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--ck-muted);}
+.ck-badge{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border:1px solid var(--ck-sc);border-radius:3px;color:var(--ck-sc);font-weight:600;}
+.ck-name{margin:4px 0 2px;font:500 24px/1.15 var(--ck-serif);}
+.ck-sub{font:11px var(--ck-mono);color:var(--ck-muted);}
+.ck-desc{color:var(--ck-muted);margin:6px 0;}
+.ck-task{margin:10px 0;padding:8px 10px;background:var(--ck-bg);border:1px solid var(--ck-line);border-top:2px solid var(--ck-accent);border-radius:3px;}
+.ck-task .id{font-family:var(--ck-mono);color:var(--ck-sc);}
+.ck-row{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap;}
+.ck-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0;}
+.ck-kpis b{display:block;font:500 22px/1.1 var(--ck-serif);font-variant-numeric:tabular-nums;}
+.ck-kpis span{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ck-muted);}
+.ck-h{margin:14px 0 4px;font:600 10px var(--ck-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--ck-muted);}
+.ck-kv{display:flex;gap:8px;padding:2px 0;} .ck-kv>span:first-child{min-width:90px;color:var(--ck-muted);} .ck-kv>span:last-child{word-break:break-word;}
+.ck-steps{font:11px var(--ck-mono);}
+.ck-steps div{display:flex;gap:8px;padding:1px 0;color:var(--ck-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.ck-steps .tl{color:var(--ck-text);}
+.ck-cron{display:flex;align-items:center;gap:8px;padding:2px 0;}
+.ck-cron .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ck-warn{color:var(--ck-accent);}
+.ck-feed{flex:1 1 0;min-height:110px;display:flex;flex-direction:column;border-top:1px solid var(--ck-line-gold);}
+.ck-feed .hd{display:flex;gap:8px;align-items:center;padding:8px 14px 4px;font:600 10px var(--ck-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--ck-muted);}
+.ck-feed .hd label{text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer;}
+.ck-fl{overflow:auto;padding:0 14px 10px;font-size:11px;}
+.ck-fr{display:flex;gap:8px;align-items:baseline;padding:2px 0;border-bottom:1px dashed var(--ck-line);}
+.ck-fr .tm{font:10px var(--ck-mono);color:var(--ck-muted);white-space:nowrap;}
+.ck-fr button{background:none;border:0;padding:0;text-align:left;}
+@media (prefers-reduced-motion:reduce){.hermes-cockpit *{transition:none !important;animation:none !important;}}
+`
+
+const GLYPH = { blocked: '◆', failed: '✕', task: '▶', working: '●', idle: '○', off: '–' }
+const STATE_PRI = { blocked: 0, failed: 1, task: 2, working: 3, idle: 4, off: 5 }
+const $focusCreate = atom(0)   // bumped by "Hand a card": the drawer focuses its create form
+
+const S = { // used by the Settings page only (rendered outside .hermes-cockpit, so theme variables)
   btn: { padding: '4px 10px', borderRadius: 6, border: '1px solid var(--ui-border)', background: 'transparent', color: 'var(--ui-text)', cursor: 'pointer', fontSize: 12 },
-  input: { padding: '4px 8px', borderRadius: 6, border: '1px solid var(--ui-border)', background: 'transparent', color: 'var(--ui-text)', fontSize: 12, minWidth: 140 },
-  h: { fontSize: 11, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ui-text-secondary)', margin: '12px 0 4px' },
-  mono: { fontFamily: 'ui-monospace, monospace', fontSize: 11 }
+  input: { padding: '4px 8px', borderRadius: 6, border: '1px solid var(--ui-border)', background: 'transparent', color: 'var(--ui-text)', fontSize: 12, minWidth: 140 }
 }
-function Kpi({ v, l, tone }) { return jsxs('div', { style: S.kpi, children: [jsx('span', { style: { ...S.kpiV, color: tone || 'var(--ui-text)' }, children: v }), jsx('span', { style: S.kpiL, children: l })] }) }
+const cx = (...a) => a.filter(Boolean).join(' ')
+function Glyph({ s }) { return jsx('span', { className: 'ck-g', 'aria-hidden': 'true', children: GLYPH[s] || '·' }) }
+function Badge({ s }) { return jsxs('span', { className: `ck-badge ck-st-${s}`, children: [jsx(Glyph, { s }), STATE_LABEL[s]] }) }
+function fmtHM(ts) { try { return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) } catch (e) { return '' } }
+function shortModel(m) { return m ? String(m).split('/').pop().replace(/^claude-/, '').slice(0, 16) : '' }
+function countStates(snap) { const c = {}; STATES.forEach(s => { c[s] = 0 }); unitsOf(snap).forEach(u => { if (c[u.state] != null) c[u.state]++ }); return c }
+function taskItems(u) { return [].concat(u.blocked || [], u.failed || [], u.task ? [u.task] : []) }
+// The card a unit is about: the one it is blocked on, the one that failed, else its running task.
+function unitTask(u) { return (u.state === 'blocked' && (u.blocked || [])[0]) || (u.state === 'failed' && (u.failed || [])[0]) || u.task || (u.blocked || [])[0] || (u.failed || [])[0] || null }
+function unitMatches(u, q) {
+  q = (q || '').trim().toLowerCase(); if (!q) return true
+  return u.profile.toLowerCase().includes(q) || (u.display_name || '').toLowerCase().includes(q) || taskItems(u).some(t => String(t.id || '').toLowerCase().includes(q) || String(t.title || '').toLowerCase().includes(q))
+}
+const unitName = (u) => u.display_name || u.profile
+const groupLabel = (snap, u) => { const g = (snap.groups || []).find(x => x.id === u.group || x.profiles.includes(u.profile)); return g ? g.label : u.group || '' }
+const byPriority = (a, b) => (STATE_PRI[a.state] - STATE_PRI[b.state]) || (a.since || 0) - (b.since || 0) || a.profile.localeCompare(b.profile)
+
+function Kpi({ v, l, tone, children }) { return jsxs('div', { className: cx('ck-kpi', tone), children: [jsx('b', { children: v }), jsx('span', { children: l }), children] }) }
+function LogoMark() { return jsx('svg', { width: 22, height: 22, viewBox: '0 0 22 22', 'aria-hidden': 'true', children: [jsx('path', { key: 'a', d: 'M11 1.5 20.5 11 11 20.5 1.5 11Z', fill: 'none', stroke: 'var(--ck-accent)', strokeWidth: 1.6 }), jsx('path', { key: 'b', d: 'M11 6.5 15.5 11 11 15.5 6.5 11Z', fill: 'var(--ck-accent)' })] }) }
 
 function MissionBar({ ctx }) {
   const snap = useAtom($snap); const mode = useAtom($mode); const err = useAtom($error); const filter = useAtom($filter); const prefs = useAtom($prefs); const n = useAtom($notice)
-  const t = snap ? snap.totals : null
-  const ceiling = snap && snap.spend_ceiling_usd; const spend = t ? t.cost_today_usd : 0
-  const spendTone = ceiling ? (spend > ceiling ? 'var(--ui-danger)' : (spend > ceiling * 0.8 ? 'var(--ui-warning)' : undefined)) : undefined
+  const t = snap ? snap.totals : null; const counts = countStates(snap)
+  const ceiling = snap && snap.spend_ceiling_usd; const spend = t ? t.cost_today_usd : 0; const over = !!(ceiling && spend > ceiling)
   const hb = snap && snap.gateway && snap.gateway.heartbeat_age_s
   const toggleState = (s) => { const next = new Set(filter.states); if (next.has(s) && next.size > 1) next.delete(s); else next.add(s); $filter.set({ ...filter, states: next }) }
-  const modeTone = mode === 'live' ? 'var(--ui-success)' : (mode === 'demo' ? 'var(--ui-warning)' : (mode === 'error' ? 'var(--ui-danger)' : 'var(--ui-text-secondary)'))
-  return jsxs('div', { style: S.bar, children: [
-    jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8 }, children: [
-      jsx('strong', { style: { color: 'var(--ui-text)', fontSize: 13 }, children: snap ? snap.title : 'Hermes Cockpit' }),
-      jsx('span', { title: err || `data: ${mode}`, style: { ...S.chip(false), borderColor: modeTone, color: modeTone }, children: mode })
+  return jsxs('div', { className: 'ck-bar', children: [
+    jsxs('div', { className: 'ck-brand', children: [
+      jsx(LogoMark, {}), jsx('span', { className: 'ck-title', children: snap ? snap.title : 'Hermes Cockpit' }),
+      jsx('span', { className: 'ck-seg', role: 'group', 'aria-label': 'Data source', title: err || `data: ${mode}`, children: ['live', 'rpc', 'demo'].map(m => jsxk('span', { key: m, className: mode === m ? 'on' : '', 'aria-current': mode === m ? 'true' : undefined, children: m })) })
     ] }),
-    t && jsx(Kpi, { v: t.needs_you, l: 'needs you', tone: t.needs_you ? 'var(--ui-danger)' : undefined }),
-    t && jsx(Kpi, { v: t.by_state.working + t.by_state.task, l: 'working' }),
-    t && jsx(Kpi, { v: t.delegations, l: 'subagents' }),
+    jsx('div', { className: 'ck-chips', role: 'group', 'aria-label': 'Filter by state', children: STATES.map(s => {
+      const on = filter.states.has(s)
+      return jsxsk('button', { key: s, type: 'button', 'aria-pressed': on, title: `${on ? 'Hide' : 'Show'} ${STATE_LABEL[s]}`, className: cx('ck-chip', `ck-st-${s}`, !on && 'dim', s === 'blocked' && counts.blocked > 0 && 'hot', s === 'failed' && counts.failed > 0 && 'bad'), onClick: () => toggleState(s), children: [jsx(Glyph, { s }), jsx('span', { children: STATE_LABEL[s] }), jsx('span', { className: 'n', children: counts[s] })] })
+    }) }),
+    jsx('span', { className: 'ck-sp' }),
     t && jsx(Kpi, { v: `${fmtTok(t.tokens_per_min)}/min`, l: 'tokens' }),
-    t && jsx(Kpi, { v: fmtUsd(spend) + (ceiling ? ` / ${fmtUsd(ceiling)}` : ''), l: 'today', tone: spendTone }),
-    snap && jsx(Kpi, { v: hb == null ? '—' : fmtAge(hb), l: 'gateway hb', tone: hb != null && hb > 300 ? 'var(--ui-warning)' : undefined }),
-    snap && (snap.signals || []).map(sg => jsxk(Kpi, { key: sg.id, v: sg.age_s == null ? '—' : fmtAge(sg.age_s), l: sg.label, tone: sg.ok ? undefined : 'var(--ui-danger)' })),
-    jsx('span', { style: { flex: 1 } }),
-    jsx('div', { style: { display: 'flex', gap: 4 }, children: STATES.map(s => jsxk('span', { key: s, style: S.chip(filter.states.has(s)), onClick: () => toggleState(s), children: STATE_LABEL[s] })) }),
-    jsx('input', { 'aria-label': 'Find a unit', placeholder: 'find unit… (/)', value: filter.q, style: S.input, 'data-ck-search': '1', onChange: (e) => $filter.set({ ...filter, q: e.target.value }) }),
-    jsx('button', { style: S.btn, title: 'Swimlanes (L)', onClick: () => setPrefs(ctx, { showLanes: !prefs.showLanes }), children: prefs.showLanes ? 'lanes ▾' : 'lanes ▸' }),
-    n && Date.now() - n.at < 6000 && jsx('span', { role: 'status', style: { color: n.kind === 'error' ? 'var(--ui-danger)' : (n.kind === 'warn' ? 'var(--ui-warning)' : 'var(--ui-success)') }, children: n.text })
+    t && jsx(Kpi, { v: fmtUsd(spend) + (ceiling ? ` / ${fmtUsd(ceiling)}` : ''), l: 'spend today', tone: over ? 'bad' : '', children: ceiling ? jsx('div', { className: cx('ck-gauge', over && 'over'), 'aria-hidden': 'true', children: jsx('i', { style: { width: `${Math.min(100, Math.round(spend / ceiling * 100))}%` } }) }) : null }),
+    snap && jsx(Kpi, { v: hb == null ? '—' : fmtAge(hb), l: 'gateway hb', tone: hb != null && hb > 300 ? 'warn' : '' }),
+    snap && (snap.signals || []).map(sg => jsxk(Kpi, { key: sg.id, v: sg.age_s == null ? '—' : fmtAge(sg.age_s), l: sg.label, tone: sg.ok ? '' : 'bad' })),
+    jsx('button', { type: 'button', className: 'ck-btn sm', title: 'Swimlanes (L)', 'aria-pressed': !!prefs.showLanes, onClick: () => setPrefs(ctx, { showLanes: !prefs.showLanes }), children: prefs.showLanes ? 'lanes ▾' : 'lanes ▸' }),
+    n && Date.now() - n.at < 6000 && jsx('span', { role: 'status', className: cx('ck-toast', n.kind), children: n.text })
   ] })
 }
 
-function GroupRail() {
-  const snap = useAtom($snap); const filter = useAtom($filter)
+function GroupRail({ ctx }) {
+  const snap = useAtom($snap); const filter = useAtom($filter); const prefs = useAtom($prefs)
   if (!snap) return null
   const pick = (id) => $filter.set({ ...filter, group: filter.group === id ? null : id })
-  return jsxs('div', { style: { display: 'flex', gap: 6, padding: '6px 12px', flexWrap: 'wrap', fontSize: 11 }, children: [
-    jsx('span', { style: S.chip(!filter.group), onClick: () => pick(null), children: `all ${snap.totals.units}` }),
+  return jsxs('div', { className: 'ck-rail', children: [
+    jsxs('button', { type: 'button', className: cx('ck-chip', !filter.group && 'sel'), 'aria-pressed': !filter.group, onClick: () => pick(null), children: ['All units ', jsx('span', { className: 'n', children: snap.totals.units })] }),
     ...(snap.groups || []).map(g => {
-      const members = g.profiles.map(p => snap.units[p]).filter(Boolean); const blocked = members.filter(u => u.state === 'blocked').length; const working = members.filter(u => u.state === 'working' || u.state === 'task').length
-      return jsxsk('span', { key: g.id, style: S.chip(filter.group === g.id), onClick: () => pick(g.id), children: [g.label, ' ', jsx('span', { style: { opacity: .7 }, children: `${working}↑` }), blocked ? jsx('span', { style: { color: 'var(--ui-danger)' }, children: ` ${blocked}!` }) : null] })
+      const members = g.profiles.map(p => snap.units[p]).filter(Boolean); const hot = members.some(u => u.state === 'blocked' || u.state === 'failed')
+      return jsxsk('button', { key: g.id, type: 'button', className: cx('ck-chip', filter.group === g.id && 'sel'), 'aria-pressed': filter.group === g.id, onClick: () => pick(g.id), children: [g.label, ' ', jsx('span', { className: 'n', children: members.length }), hot ? jsx('span', { className: 'ck-dot', title: 'needs you or failed' }) : null, hot ? jsx('span', { className: 'ck-sr', children: ' needs attention' }) : null] })
     }),
-    snap.pipeline && Object.keys(snap.pipeline).length ? jsx('span', { style: { marginLeft: 'auto', color: 'var(--ui-text-secondary)' }, children: 'board: ' + ['todo', 'ready', 'running', 'blocked', 'review', 'done'].filter(k => snap.pipeline[k] != null).map(k => `${k} ${snap.pipeline[k]}`).join(' · ') }) : null
+    jsx('span', { className: 'ck-sp' }),
+    snap.pipeline && Object.keys(snap.pipeline).length ? jsx('span', { className: 'ck-board', children: 'board: ' + ['todo', 'ready', 'running', 'blocked', 'review', 'done'].filter(k => snap.pipeline[k] != null).map(k => `${k} ${snap.pipeline[k]}`).join(' · ') }) : null,
+    jsx('input', { className: 'ck-input', 'aria-label': 'Find unit or task id', placeholder: 'Find unit or task id', 'data-ck-search': '1', value: filter.q, onChange: (e) => $filter.set({ ...filter, q: e.target.value }) }),
+    jsxs('span', { className: 'ck-vt', role: 'group', 'aria-label': 'View', children: [
+      jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view !== 'constellation' && 'on'), 'aria-pressed': prefs.view !== 'constellation', onClick: () => setPrefs(ctx, { view: 'grid' }), children: 'Grid' }),
+      jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view === 'constellation' && 'on'), 'aria-pressed': prefs.view === 'constellation', onClick: () => setPrefs(ctx, { view: 'constellation' }), children: 'Constellation' })
+    ] })
   ] })
+}
+
+function NeedsQueue() {
+  const snap = useAtom($snap); const filter = useAtom($filter)
+  if (!snap) return null
+  const list = unitsOf(snap).filter(u => (u.state === 'blocked' || u.state === 'failed') && (!filter.group || u.group === filter.group) && unitMatches(u, filter.q)).sort(byPriority)
+  if (!list.length) return null
+  const nb = list.filter(u => u.state === 'blocked').length, nf = list.length - nb
+  return jsxs('section', { className: 'ck-queue', 'aria-label': 'Needs you', children: [
+    jsxs('div', { className: 'ck-qh', children: [`◆ needs you · ${nb} waiting · ${nf} failed`] }),
+    jsx('div', { className: 'ck-qrow', children: list.map(u => {
+      const t = unitTask(u)
+      return jsxsk('div', { key: u.profile, className: `ck-card ck-st-${u.state}`, children: [
+        jsxs('button', { type: 'button', className: 'ck-cb', onClick: () => $selected.set(u.profile), 'aria-label': `${unitName(u)}, ${STATE_LABEL[u.state]}${t ? ', ' + t.title : ''}`, children: [
+          jsxs('span', { className: 'ck-l1', children: [jsx(Glyph, { s: u.state }), jsx('span', { className: 'nm', children: unitName(u) }), jsx('span', { className: 'gr', children: groupLabel(snap, u) }), jsx('span', { className: 'age', children: fmtAge(snap.ts - u.since) })] }),
+          jsxs('span', { className: 'ck-l2', children: [t && jsx('span', { className: 'id', children: t.id }), jsx('span', { className: 'tt', children: t ? t.title : STATE_LABEL[u.state] })] })
+        ] }),
+        jsxs('div', { className: 'ck-ca', children: [
+          jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => actions.openChat(u.profile), children: 'Open chat' }),
+          u.state === 'blocked' && jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => actions.handCard(u.profile), children: 'Hand a card' })
+        ] })
+      ] })
+    }) })
+  ] })
+}
+
+function Spark({ vals, w = 64, h = 16 }) {
+  const max = Math.max(1, ...vals); const n = vals.length
+  const pts = n < 2 ? `0,${h - 1} ${w},${h - 1}` : vals.map((v, i) => `${(i / (n - 1) * w).toFixed(1)},${(h - 1 - (v / max) * (h - 3)).toFixed(1)}`).join(' ')
+  return jsx('svg', { width: w, height: h, viewBox: `0 0 ${w} ${h}`, 'aria-hidden': 'true', focusable: 'false', children: jsx('polyline', { points: pts, fill: 'none', stroke: 'var(--ck-sc)', strokeWidth: 1.2, strokeLinejoin: 'round', strokeLinecap: 'round', opacity: n < 2 ? 0.4 : 1 }) })
+}
+function tileSub(u) {
+  const t = unitTask(u)
+  if (u.state === 'off') return { text: 'off duty' }
+  if (t && u.state !== 'idle') return { id: t.id, text: u.current_step || t.title || '' }
+  if (u.state === 'idle' || !u.latest_session) { const la = u.latest_session && u.latest_session.last_activity_at; return { text: la ? `idle · last run ${fmtHM(la)}` : 'idle' } }
+  return { text: u.latest_session.title || STATE_LABEL[u.state] }
+}
+
+function UnitGrid() {
+  const snap = useAtom($snap); const filter = useAtom($filter); const prefs = useAtom($prefs); const sel = useAtom($selected); const hist = useAtom($history)
+  const pts = useMemo(() => hist.slice(-30), [hist])
+  if (!snap) return jsx('div', { className: 'ck-empty', children: 'Waiting for the first snapshot…' })
+  const cols = (snap.groups || []).map(g => {
+    const members = g.profiles.map(p => snap.units[p]).filter(Boolean)
+    const vis = members.filter(u => filter.states.has(u.state) && (prefs.showIdle || (u.state !== 'idle' && u.state !== 'off')) && (!filter.group || filter.group === g.id) && unitMatches(u, filter.q)).sort(byPriority)
+    return { g, members, vis }
+  }).filter(c => c.vis.length)
+  if (!cols.length) return jsx('div', { className: 'ck-empty', children: 'No unit matches the current filter.' })
+  return jsx('div', { className: 'ck-grid', children: cols.map(({ g, members, vis }) => jsxsk('section', { key: g.id, className: 'ck-col', 'aria-label': g.label, children: [
+    jsxs('h3', { children: [g.label, jsx('small', { children: `${members.length} · ${members.filter(u => u.state === 'working' || u.state === 'task').length} active` })] }),
+    jsx('div', { className: 'ck-tiles', children: vis.map(u => {
+      const sub = tileSub(u)
+      return jsxsk('button', { key: u.profile, type: 'button', className: `ck-tile ck-st-${u.state}`, 'aria-pressed': sel === u.profile, 'aria-label': `${unitName(u)}, ${STATE_LABEL[u.state]}, ${(sub.id ? sub.id + ' ' : '') + sub.text}`, title: u.profile, onClick: () => $selected.set(sel === u.profile ? null : u.profile), onDoubleClick: () => actions.openChat(u.profile), children: [
+        jsxs('span', { className: 't1', children: [jsx(Glyph, { s: u.state }), jsx('span', { className: 'nm', children: unitName(u) })] }),
+        jsx('span', { className: 'md', children: shortModel(u.model) }),
+        jsxs('span', { className: 't2', children: [sub.id ? jsx('span', { className: 'id', children: sub.id + ' ' }) : null, sub.text] }),
+        jsx(Spark, { vals: pts.map(pt => (pt.tpm || {})[u.profile] || 0) })
+      ] })
+    }) })
+  ] })) })
 }
 
 function Drawer({ ctx }) {
-  const snap = useAtom($snap); const sel = useAtom($selected); const mode = useAtom($mode)
+  const snap = useAtom($snap); const sel = useAtom($selected); const mode = useAtom($mode); const fc = useAtom($focusCreate)
   const [detail, setDetail] = useState(null); const [steer, setSteer] = useState(''); const [task, setTask] = useState('')
+  const createRef = useRef(null); const seenFc = useRef(fc)
   useEffect(() => {
     setDetail(null); if (!sel || mode !== 'live') return
     let alive = true; ctx.rest(`/unit/${encodeURIComponent(sel)}`).then(d => { if (alive) setDetail(d) }).catch(() => {})
     return () => { alive = false }
   }, [sel, mode, snap && snap.rev])
-  if (!snap || !sel || !snap.units[sel]) return jsx('div', { style: { padding: 14, color: 'var(--ui-text-secondary)', fontSize: 12 }, children: 'Click a unit for its live steps and controls. Double-click opens a chat with it.' })
-  const u = snap.units[sel]; const d = detail || u; const sid = u.latest_session && u.latest_session.id
-  const col = `var(--ui-${u.state === 'blocked' ? 'danger' : u.state === 'failed' ? 'warning' : u.state === 'working' ? 'success' : u.state === 'task' ? 'accent' : 'text-secondary'})`
-  const row = (k, v) => v == null || v === '' ? null : jsxs('div', { style: { display: 'flex', gap: 8, fontSize: 12, padding: '2px 0' }, children: [jsx('span', { style: { color: 'var(--ui-text-secondary)', minWidth: 86 }, children: k }), jsx('span', { style: { color: 'var(--ui-text)', wordBreak: 'break-word' }, children: v })] })
-  const summary = () => `${u.profile} — ${STATE_LABEL[u.state]} for ${fmtAge(snap.ts - u.since)}${u.task ? `; task ${u.task.id} "${u.task.title}"` : ''}${u.blocked.length ? `; blocked: ${u.blocked.map(b => b.title).join(', ')}` : ''}; today ${fmtTok(u.tokens_today)} tok ${fmtUsd(u.cost_today_usd)}`
-  return jsxs('div', { style: { padding: '10px 14px', overflow: 'auto', fontSize: 12 }, children: [
-    jsxs('div', { style: { display: 'flex', alignItems: 'baseline', gap: 10 }, children: [
-      jsx('strong', { style: { fontSize: 15, color: 'var(--ui-text)' }, children: u.display_name || u.profile }),
-      jsx('span', { style: { color: col }, children: STATE_LABEL[u.state] }), jsx('span', { style: { color: 'var(--ui-text-secondary)' }, children: fmtAge(snap.ts - u.since) }),
-      jsx('button', { style: { ...S.btn, marginLeft: 'auto' }, onClick: () => $selected.set(null), 'aria-label': 'close', children: '×' })
+  useEffect(() => { // "Hand a card" from the queue: select the unit and put the cursor in its create form
+    if (fc === seenFc.current) return; seenFc.current = fc
+    const el = createRef.current; if (!el) return
+    try { if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest' }); el.focus() } catch (e) { /* no layout */ }
+  }, [fc])
+  if (!snap || !sel || !snap.units[sel]) return jsx('div', { className: 'ck-drawer', children: jsx('div', { className: 'ck-note', children: 'Select a unit for its live steps and controls. Double-click opens a chat with it.' }) })
+  const u = snap.units[sel]; const d = detail || u; const sid = u.latest_session && u.latest_session.id; const cur = unitTask(u); const running = u.state === 'working' || u.state === 'task'
+  const row = (k, v) => v == null || v === '' ? null : jsxs('div', { className: 'ck-kv', children: [jsx('span', { children: k }), jsx('span', { children: v })] })
+  const summary = () => `${u.profile} — ${STATE_LABEL[u.state]} for ${fmtAge(snap.ts - u.since)}${u.task ? `; task ${u.task.id} "${u.task.title}"` : ''}${(u.blocked || []).length ? `; blocked: ${u.blocked.map(b => b.title).join(', ')}` : ''}; today ${fmtTok(u.tokens_today)} tok ${fmtUsd(u.cost_today_usd)}`
+  const doSteer = () => { if (steer.trim()) { actions.steer(u.profile, sid, steer.trim()); setSteer('') } }
+  return jsxs('div', { className: `ck-drawer ck-st-${u.state}`, children: [
+    jsxs('div', { className: 'ck-eyebrow', children: [groupLabel(snap, u), '·', jsx(Badge, { s: u.state }), jsx('span', { className: 'ck-sp' }), jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => $selected.set(null), 'aria-label': 'close', children: '×' })] }),
+    jsx('div', { className: 'ck-name', children: unitName(u) }),
+    jsx('div', { className: 'ck-sub', children: [u.model, fmtAge(snap.ts - u.since)].filter(Boolean).join(' · ') }),
+    u.description && jsx('div', { className: 'ck-desc', children: u.description }),
+    cur && jsxs('div', { className: 'ck-task', children: [jsx('div', { className: 'ck-h', style: { margin: '0 0 4px' }, children: 'current task' }), jsxs('div', { children: [jsx('span', { className: 'id', children: cur.id }), ' ', cur.title], }),
+      cur.block_kind ? jsx('div', { className: 'ck-sub', children: cur.block_kind }) : null, u.task && cur === u.task ? jsx('div', { className: 'ck-sub', children: [`since ${fmtAge(snap.ts - (u.task.started_at || snap.ts))}`, u.task.created_by, u.task.board].filter(Boolean).join(' · ') }) : null] }),
+    jsxs('div', { className: 'ck-row', children: [
+      jsx('button', { type: 'button', className: 'ck-btn', onClick: () => actions.openChat(u.profile), children: 'Open chat' }),
+      jsx('button', { type: 'button', className: 'ck-btn', onClick: () => actions.copy(summary()), children: 'Copy summary' })
     ] }),
-    u.description && jsx('div', { style: { color: 'var(--ui-text-secondary)', margin: '4px 0' }, children: u.description }),
-    jsxs('div', { style: { display: 'flex', gap: 6, margin: '8px 0', flexWrap: 'wrap' }, children: [
-      jsx('button', { style: S.btn, onClick: () => actions.openChat(u.profile), children: 'Open chat' }),
-      sid && (u.state === 'working' || u.state === 'task') && jsx('button', { style: S.btn, onClick: () => actions.interrupt(u.profile, sid), children: 'Interrupt' }),
-      jsx('button', { style: S.btn, onClick: () => actions.copy(summary()), children: 'Copy summary' })
+    sid && running && jsxs('div', { className: 'ck-row', children: [
+      jsx('input', { className: 'ck-input', style: { flex: 1 }, 'aria-label': 'Steer this turn', placeholder: 'steer this turn…', value: steer, onChange: e => setSteer(e.target.value), onKeyDown: e => { if (e.key === 'Enter') doSteer() } }),
+      jsx('button', { type: 'button', className: 'ck-btn', onClick: () => actions.interrupt(u.profile, sid), children: 'Interrupt' }),
+      jsx('button', { type: 'button', className: 'ck-btn gold', onClick: doSteer, children: 'Steer' })
     ] }),
-    sid && (u.state === 'working' || u.state === 'task') && jsxs('div', { style: { display: 'flex', gap: 6 }, children: [
-      jsx('input', { style: { ...S.input, flex: 1 }, placeholder: 'steer this turn…', value: steer, onChange: e => setSteer(e.target.value), onKeyDown: e => { if (e.key === 'Enter' && steer.trim()) { actions.steer(u.profile, sid, steer.trim()); setSteer('') } } }),
-      jsx('button', { style: S.btn, onClick: () => { if (steer.trim()) { actions.steer(u.profile, sid, steer.trim()); setSteer('') } }, children: 'Steer' })
+    jsxs('div', { className: 'ck-kpis', children: [
+      jsxs('div', { children: [jsx('b', { children: fmtUsd(u.cost_today_usd) }), jsx('span', { children: 'cost today' })] }),
+      jsxs('div', { children: [jsx('b', { children: fmtTok(u.tokens_today) }), jsx('span', { children: 'tokens today' })] }),
+      jsxs('div', { children: [jsx('b', { children: fmtTok(u.tokens_per_min) }), jsx('span', { children: 'tok/min' })] })
     ] }),
-    (u.anomalies || []).length ? jsxs('div', { children: [jsx('div', { style: S.h, children: 'anomalies' }), ...u.anomalies.map((a, i) => jsxsk('div', { key: i, style: { color: 'var(--ui-warning)' }, children: [a.rule, ' — ', jsx('span', { style: { color: 'var(--ui-text-secondary)' }, children: a.evidence })] }))] }) : null,
-    u.blocked.length ? jsxs('div', { children: [jsx('div', { style: S.h, children: 'needs you' }), ...u.blocked.map(b => jsxsk('div', { key: b.id, style: { padding: '3px 0' }, children: [jsx('span', { style: S.mono, children: b.id }), ' ', b.title, b.block_kind ? jsx('span', { style: { color: 'var(--ui-text-secondary)' }, children: ` · ${b.block_kind}` }) : null] }))] }) : null,
-    u.task ? jsxs('div', { children: [jsx('div', { style: S.h, children: 'task' }), row('card', `${u.task.id} · ${u.task.title}`), row('since', fmtAge(snap.ts - (u.task.started_at || snap.ts))), row('created by', u.task.created_by), row('board', u.task.board)] }) : null,
-    jsx('div', { style: S.h, children: 'unit' }),
-    row('model', u.model), row('sessions today', u.sessions_today), row('tokens today', `${fmtTok(u.tokens_today)} · ${fmtUsd(u.cost_today_usd)}`), row('subagents', u.delegations || 0), row('heartbeat', u.heartbeat_age_s == null ? null : fmtAge(u.heartbeat_age_s)),
-    u.latest_session ? jsxs('div', { children: [jsx('div', { style: S.h, children: 'latest session' }), row('title', u.latest_session.title), row('source', u.latest_session.source), row('activity', u.latest_session.last_activity_at ? fmtAge(snap.ts - u.latest_session.last_activity_at) + ' ago' : null), row('tool calls', u.latest_session.tool_calls)] }) : null,
-    d.recent_tool_calls && d.recent_tool_calls.length ? jsxs('div', { children: [jsx('div', { style: S.h, children: 'live steps' }), ...d.recent_tool_calls.slice(0, 10).map((c, i) => jsxsk('div', { key: i, style: { ...S.mono, color: 'var(--ui-text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: [jsx('span', { style: { color: 'var(--ui-text)' }, children: c.tool }), c.target ? ` ${c.target}` : ''] }))] }) : null,
-    u.cron && u.cron.jobs ? jsxs('div', { children: [jsx('div', { style: S.h, children: `cron · ${u.cron.jobs} job${u.cron.jobs > 1 ? 's' : ''}${u.cron.errors_recent ? ` · ${u.cron.errors_recent} error` : ''}` }),
-      ...(u.cron.list || []).slice(0, 8).map(j => jsxsk('div', { key: j.id, style: { display: 'flex', gap: 6, alignItems: 'center', padding: '2px 0' }, children: [
-        jsx('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: j.schedule || '', children: j.name || j.id }),
-        jsx('span', { style: { color: j.last_status === 'error' ? 'var(--ui-danger)' : 'var(--ui-text-secondary)' }, children: j.paused ? 'paused' : (j.last_status || '') }),
-        jsx('button', { style: { ...S.btn, padding: '1px 6px' }, onClick: () => actions.cron(u.profile, j.id, j.paused ? 'resume' : 'pause'), children: j.paused ? '▶' : '⏸' })
+    u.blocked && u.blocked.length ? jsxs('div', { children: [jsx('div', { className: 'ck-h', children: 'needs you' }), ...u.blocked.map(b => jsxsk('div', { key: b.id, style: { padding: '3px 0' }, children: [jsx('span', { className: 'ck-mono', children: b.id }), ' ', b.title, b.block_kind ? jsx('span', { style: { color: 'var(--ck-muted)' }, children: ` · ${b.block_kind}` }) : null] }))] }) : null,
+    u.failed && u.failed.length ? jsxs('div', { children: [jsx('div', { className: 'ck-h', children: 'failed' }), ...u.failed.map(b => jsxsk('div', { key: b.id, style: { padding: '3px 0' }, children: [jsx('span', { className: 'ck-mono', style: { color: 'var(--ck-s-failed)' }, children: b.id }), ' ', b.title] }))] }) : null,
+    (u.anomalies || []).length ? jsxs('div', { children: [jsx('div', { className: 'ck-h', children: 'anomalies' }), ...u.anomalies.map((a, i) => jsxsk('div', { key: i, className: 'ck-warn', children: [a.rule, ' — ', jsx('span', { style: { color: 'var(--ck-muted)' }, children: a.evidence })] }))] }) : null,
+    d.recent_tool_calls && d.recent_tool_calls.length ? jsxs('div', { children: [jsx('div', { className: 'ck-h', children: 'live steps' }), jsx('div', { className: 'ck-steps', children: d.recent_tool_calls.slice(0, 10).map((c, i) => jsxsk('div', { key: i, className: c.ok === false ? 'ck-st-failed' : 'ck-st-working', children: [c.ts ? jsx('span', { children: fmtClock(c.ts) }) : null, jsx(Glyph, { s: c.ok === false ? 'failed' : 'working' }), jsx('span', { className: 'tl', children: c.tool }), c.target ? ` ${c.target}` : ''] })) })] }) : null,
+    u.cron && u.cron.jobs ? jsxs('div', { children: [jsx('div', { className: 'ck-h', children: `cron · ${u.cron.jobs} job${u.cron.jobs > 1 ? 's' : ''}${u.cron.errors_recent ? ` · ${u.cron.errors_recent} error` : ''}` }),
+      ...(u.cron.list || []).slice(0, 8).map(j => jsxsk('div', { key: j.id, className: 'ck-cron', children: [
+        jsx('span', { className: 'nm', title: j.schedule || '', children: j.name || j.id }),
+        jsx('span', { style: { color: j.last_status === 'error' ? 'var(--ck-s-failed)' : 'var(--ck-muted)' }, children: j.paused ? 'paused' : (j.last_status || '') }),
+        jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => actions.cron(u.profile, j.id, j.paused ? 'resume' : 'pause'), children: j.paused ? 'Resume' : 'Pause' })
       ] }))] }) : null,
-    snap.mode === 'live' && jsxs('div', { children: [jsx('div', { style: S.h, children: 'hand a card to this unit' }),
-      jsxs('div', { style: { display: 'flex', gap: 6 }, children: [
-        jsx('input', { style: { ...S.input, flex: 1 }, placeholder: 'task title (needs allow_task_create in cockpit.yaml)', value: task, onChange: e => setTask(e.target.value) }),
-        jsx('button', { style: S.btn, onClick: async () => { if (task.trim().length >= 3) { const r = await actions.createTask(ctx, u.profile, task.trim(), ''); if (r) setTask('') } }, children: 'Create' })
+    snap.mode === 'live' && jsxs('div', { children: [jsx('div', { className: 'ck-h', children: 'hand a card to this unit' }),
+      jsxs('div', { className: 'ck-row', style: { margin: 0 }, children: [
+        jsx('input', { ref: createRef, className: 'ck-input', style: { flex: 1 }, 'aria-label': 'Task title', placeholder: 'task title (needs allow_task_create in cockpit.yaml)', value: task, onChange: e => setTask(e.target.value), onKeyDown: e => { if (e.key === 'Enter') e.currentTarget.nextSibling.click() } }),
+        jsx('button', { type: 'button', className: 'ck-btn', onClick: async () => { if (task.trim().length >= 3) { const r = await actions.createTask(ctx, u.profile, task.trim(), ''); if (r) setTask('') } }, children: 'Create' })
       ] })] }),
-    d.recent_sessions && d.recent_sessions.length > 1 ? jsxs('div', { children: [jsx('div', { style: S.h, children: 'recent sessions' }), ...d.recent_sessions.slice(0, 6).map(s => jsxsk('div', { key: s.id, style: { display: 'flex', gap: 8, color: 'var(--ui-text-secondary)' }, children: [jsx('span', { style: { color: 'var(--ui-text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: s.title || s.id }), jsx('span', { style: S.mono, children: `${fmtTok(s.tokens)} · ${fmtUsd(s.estimated_cost_usd)}` })] }))] }) : null
+    jsx('div', { className: 'ck-h', children: 'unit' }),
+    row('model', u.model), row('sessions today', u.sessions_today), row('subagents', u.delegations || 0), row('heartbeat', u.heartbeat_age_s == null ? null : fmtAge(u.heartbeat_age_s)),
+    u.latest_session ? jsxs('div', { children: [jsx('div', { className: 'ck-h', children: 'latest session' }), row('title', u.latest_session.title), row('source', u.latest_session.source), row('activity', u.latest_session.last_activity_at ? fmtAge(snap.ts - u.latest_session.last_activity_at) + ' ago' : null), row('tool calls', u.latest_session.tool_calls)] }) : null,
+    d.recent_sessions && d.recent_sessions.length > 1 ? jsxs('div', { children: [jsx('div', { className: 'ck-h', children: 'recent sessions' }), ...d.recent_sessions.slice(0, 6).map(s => jsxsk('div', { key: s.id, className: 'ck-kv', children: [jsx('span', { style: { color: 'var(--ck-text)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: s.title || s.id }), jsx('span', { className: 'ck-mono', style: { color: 'var(--ck-muted)' }, children: `${fmtTok(s.tokens)} · ${fmtUsd(s.estimated_cost_usd)}` })] }))] }) : null
   ] })
 }
 
+function feedGlyph(e) {
+  if (e.kind === 'state') { const m = /→\s*(.+)$/.exec(e.text || ''); const s = m && STATES.find(k => STATE_LABEL[k] === m[1].trim()); return s || 'working' }
+  return e.kind === 'kanban' ? 'idle' : 'blocked'
+}
 function Feed() {
   const feed = useAtom($feed); const sel = useAtom($selected); const [onlyMine, setOnlyMine] = useState(false)
   const rows = feed.filter(e => !onlyMine || !sel || e.profile === sel).slice(-80).reverse()
-  const tone = (k) => k === 'state' ? 'var(--ui-accent)' : (k === 'kanban' ? 'var(--ui-text-secondary)' : 'var(--ui-warning)')
-  return jsxs('div', { style: { borderTop: '1px solid var(--ui-border)', display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }, children: [
-    jsxs('div', { style: { ...S.h, margin: 0, padding: '8px 14px 4px', display: 'flex', gap: 8 }, children: ['feed', jsx('span', { style: { flex: 1 } }), sel && jsxs('label', { style: { textTransform: 'none', letterSpacing: 0, cursor: 'pointer' }, children: [jsx('input', { type: 'checkbox', checked: onlyMine, onChange: e => setOnlyMine(e.target.checked) }), ` only ${sel}`] })] }),
-    jsx('div', { style: { overflow: 'auto', padding: '0 14px 10px', fontSize: 11 }, children: rows.length ? rows.map(e => jsxsk('div', { key: e.seq, style: { display: 'flex', gap: 8, padding: '2px 0', borderBottom: '1px dashed var(--ui-border)' }, children: [
-      jsx('span', { style: { ...S.mono, color: 'var(--ui-text-secondary)' }, children: fmtClock(e.ts) }), jsx('span', { style: { color: tone(e.kind), minWidth: 44 }, children: e.kind }),
-      jsx('span', { style: { color: 'var(--ui-text)', cursor: e.profile ? 'pointer' : 'default' }, onClick: () => e.profile && $selected.set(e.profile), children: e.text })
-    ] })) : jsx('div', { style: { color: 'var(--ui-text-secondary)' }, children: 'No events yet — state changes and board events land here.' }) })
+  return jsxs('div', { className: 'ck-feed', children: [
+    jsxs('div', { className: 'hd', children: ['feed', jsx('span', { className: 'ck-sp' }), sel && jsxs('label', { children: [jsx('input', { type: 'checkbox', checked: onlyMine, onChange: e => setOnlyMine(e.target.checked) }), ` only ${sel}`] })] }),
+    jsx('div', { className: 'ck-fl', children: rows.length ? rows.map(e => { const gs = feedGlyph(e); return jsxsk('div', { key: e.seq, className: `ck-fr ck-st-${gs}`, children: [
+      jsx('span', { className: 'tm', children: fmtClock(e.ts) }), jsx(Glyph, { s: gs }),
+      e.profile ? jsx('button', { type: 'button', onClick: () => $selected.set(e.profile), children: e.text }) : jsx('span', { children: e.text })
+    ] }) }) : jsx('div', { className: 'ck-note', style: { padding: 0 }, children: 'No events yet — state changes and board events land here.' }) })
   ] })
 }
 
 function setPrefs(ctx, patch) { const next = { ...$prefs.get(), ...patch }; $prefs.set(next); try { ctx.storage.set('prefs', next) } catch (e) { /* storage unavailable */ } }
 
 function Page({ ctx }) {
-  const prefs = useAtom($prefs); const sel = useAtom($selected); const mode = useAtom($mode); const snap = useAtom($snap)
+  const prefs = useAtom($prefs); const mode = useAtom($mode)
   const [narrow, setNarrow] = useState(false); const root = useRef(null)
   useEffect(() => { const el = root.current; if (!el || typeof ResizeObserver === 'undefined') return; const ro = new ResizeObserver(() => setNarrow(el.getBoundingClientRect().width < 900)); ro.observe(el); return () => ro.disconnect() }, [])
-  return jsxs('div', { ref: root, className: 'hermes-cockpit', style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, color: 'var(--ui-text)' }, children: [
+  return jsxs('div', { ref: root, className: cx('hermes-cockpit', prefs.density === 'compact' && 'ck-compact'), 'data-ck-theme': prefs.theme === 'app' ? 'app' : 'gsp', children: [
+    jsx('style', { children: CK_CSS }),
     jsx(MissionBar, { ctx }),
-    jsx(GroupRail, {}),
-    mode === 'demo' && jsx('div', { style: { padding: '4px 12px', fontSize: 11, color: 'var(--ui-warning)' }, children: prefs.demo ? 'Demo data (Settings → Plugins → Hermes Cockpit to turn off).' : 'Showing demo data: the sensor is not enabled on this backend and RPC is unreachable. Enable `hermes-cockpit` in plugins.enabled for the live picture.' }),
-    mode === 'rpc' && jsx('div', { style: { padding: '4px 12px', fontSize: 11, color: 'var(--ui-text-secondary)' }, children: 'RPC-only picture: sessions per profile, no board/cost. The sensor half is not reachable at /api/plugins/hermes-cockpit — add `hermes-cockpit` to plugins.enabled on the backend, and check its dashboard/manifest.json `name` equals `hermes-cockpit` (the API mounts under /api/plugins/<manifest name>/).' }),
+    jsx(GroupRail, { ctx }),
+    mode === 'demo' && jsx('div', { className: 'ck-note demo', children: prefs.demo ? 'Demo data (Settings → Plugins → Hermes Cockpit to turn off).' : 'Showing demo data: the sensor is not enabled on this backend and RPC is unreachable. Enable `hermes-cockpit` in plugins.enabled for the live picture.' }),
+    mode === 'rpc' && jsx('div', { className: 'ck-note', children: 'RPC-only picture: sessions per profile, no board/cost. The sensor half is not reachable at /api/plugins/hermes-cockpit — add `hermes-cockpit` to plugins.enabled on the backend, and check its dashboard/manifest.json `name` equals `hermes-cockpit` (the API mounts under /api/plugins/<manifest name>/).' }),
+    jsx(NeedsQueue, {}),
     jsxs('div', { style: { display: 'flex', flex: 1, minHeight: 0, flexDirection: narrow ? 'column' : 'row' }, children: [
-      jsxs('div', { style: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }, children: [jsx(Constellation, { ctx }), prefs.showLanes && jsx(Swimlanes, {})] }),
-      jsxs('div', { style: { width: narrow ? 'auto' : 340, borderLeft: narrow ? 'none' : '1px solid var(--ui-border)', borderTop: narrow ? '1px solid var(--ui-border)' : 'none', display: 'flex', flexDirection: 'column', minHeight: narrow ? 260 : 0 }, children: [jsx(Drawer, { ctx }), jsx(Feed, {})] })
+      jsxs('div', { className: 'ck-main', children: [prefs.view === 'constellation' ? jsx(Constellation, { ctx }) : jsx(UnitGrid, {}), prefs.showLanes && jsx(Swimlanes, {})] }),
+      jsxs('div', { className: 'ck-side', style: { width: narrow ? 'auto' : 360, borderLeft: narrow ? 'none' : '1px solid var(--ck-line-gold)', borderTop: narrow ? '1px solid var(--ck-line-gold)' : 'none', minHeight: narrow ? 260 : 0 }, children: [jsx(Drawer, { ctx }), jsx(Feed, {})] })
     ] })
   ] })
 }
@@ -597,8 +859,10 @@ function Settings({ ctx }) {
   const Num = (k, min, max, step) => jsx('input', { type: 'number', min, max, step, value: p[k], style: { ...S.input, minWidth: 80 }, onChange: e => setPrefs(ctx, { [k]: Number(e.target.value) }) })
   const Sel = (k, opts) => jsx('select', { value: p[k], style: S.input, onChange: e => setPrefs(ctx, { [k]: e.target.value }), children: opts.map(o => jsxk('option', { key: o, value: o, children: o })) })
   return jsxs('div', { style: { padding: '4px 0', maxWidth: 640 }, children: [
+    Row('Theme', Sel('theme', ['gsp', 'app']), 'gsp: GSP house style (navy, gold). app: the host app\'s own theme variables.'),
+    Row('Main view', Sel('view', ['grid', 'constellation']), 'Grid: one column per group. Constellation: the canvas map.'),
     Row('Poll interval (ms)', Num('pollMs', 1500, 60000, 500), 'How often to ask the sensor. Pushes from the gateway arrive instantly regardless.'),
-    Row('Swimlanes', Toggle('showLanes'), 'History strip under the constellation; drag it to replay.'),
+    Row('Swimlanes', Toggle('showLanes'), 'History strip under the main view; drag it to replay.'),
     Row('Lane window (minutes)', Num('laneMinutes', 5, 1440, 5)),
     Row('Lanes by', Sel('laneBy', ['group', 'unit'])),
     Row('Show idle units', Toggle('showIdle'), 'Off hides idle/off-duty units from the constellation and lanes.'),

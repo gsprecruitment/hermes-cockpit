@@ -85,7 +85,7 @@ const L = T.layout(LIVE, 1000, 600, true)
 assert(L.pos.default && Math.abs(L.pos.default.x - 500) < 1 && L.arcs.length === LIVE.groups.filter(g => g.profiles.some(x => x !== LIVE.owner)).length, 'layout: owner centred, one arc per group with non-owner members')
 assert(L.pos.editor.r < L.pos.chief.r && L.pos.editor.r < L.pos.default.r + L.inner + 1, 'layout: blocked unit pulled to the inner ring')
 const d1 = T.demoSnap(null); const d2 = T.demoSnap(d1)
-assert(Object.keys(d2.units).length === 16 && d2.rev === 2 && d2.totals.units === 16, 'demo fleet evolves deterministically')
+assert(Object.keys(d2.units).length === 47 && d2.rev === 2 && d2.totals.units === 47, 'demo fleet evolves deterministically')
 assert(T.fmtTok(1234567) === '1.2M' && T.fmtAge(3700) === '1.0h', 'formatters')
 
 // ── 2. register + mount ─────────────────────────────────────────────────────────────────
@@ -103,8 +103,25 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 await act(async () => { rootR.render(route.render()) }); await act(async () => { await sleep(60) })
 const text = rootEl.textContent
 assert(/needs you/.test(text) && /working/.test(text) && /tokens/.test(text), 'mission bar renders KPIs')
-assert(rootEl.querySelectorAll('canvas').length === 2, 'constellation + swimlanes canvases mounted')
+assert(T.$prefs.get().view === 'grid' && T.$prefs.get().theme === 'gsp', 'defaults: grid view, gsp theme')
+assert(rootEl.querySelectorAll('canvas').length === 1 && rootEl.querySelector('[data-ck-theme=gsp]'), 'grid is the default view: only the swimlanes canvas, gsp theme attribute')
 assert(/Leadership/.test(text) && /board:/.test(text), 'group rail + pipeline strip')
+const tiles = rootEl.querySelectorAll('.ck-tile')
+assert(tiles.length === Object.keys(LIVE.units).length && rootEl.querySelectorAll('.ck-col').length === 3, 'unit grid: one tile per unit, one column per group')
+assert(/◆/.test(rootEl.querySelector('.ck-tile.ck-st-blocked').textContent) && rootEl.querySelector('.ck-tile.ck-st-blocked svg polyline'), 'blocked tile: glyph + sparkline')
+assert(rootEl.querySelectorAll('.ck-card').length === 1 && /Hand a card/.test(rootEl.querySelector('.ck-card').textContent) && /T2/.test(rootEl.querySelector('.ck-card').textContent), 'needs-you queue: one card for the blocked unit with its task id')
+assert(rootEl.querySelector('.ck-queue').textContent.includes('1 waiting'), 'queue header counts waiting units')
+// search filters tiles by task id
+const search = rootEl.querySelector('[data-ck-search]')
+await act(async () => { setVal(search, 'T1') }); assert(rootEl.querySelectorAll('.ck-tile').length === 1, 'search by task id narrows the grid')
+await act(async () => { setVal(search, '') })
+// queue "Hand a card" selects the unit and focuses its create form
+await act(async () => { Array.from(rootEl.querySelectorAll('.ck-card button')).find(b => b.textContent === 'Hand a card').click() }); await act(async () => { await sleep(40) })
+assert(T.$selected.get() === 'editor' && window.document.activeElement && /task title/.test(window.document.activeElement.placeholder || ''), 'Hand a card selects the unit and focuses the create form')
+await act(async () => { T.$selected.set(null) })
+// constellation stays reachable through the view pref
+await act(async () => { T.$prefs.set({ ...T.$prefs.get(), view: 'constellation' }) }); await act(async () => { await sleep(40) })
+assert(rootEl.querySelectorAll('canvas').length === 2, 'constellation view: constellation + swimlanes canvases mounted')
 await act(async () => { await sleep(80) })
 assert(calls.arc > 20 && calls.fillText > 5, `draw loop ran (arc=${calls.arc}, text=${calls.fillText})`)
 
@@ -117,7 +134,7 @@ await act(async () => { setVal(steerInput, 'focus on Eindhoven') })
 const steerBtn = Array.from(rootEl.querySelectorAll('button')).find(b => b.textContent === 'Steer')
 await act(async () => { steerBtn.click(); await sleep(10) })
 assert(log.requests.some(r => r[0] === 'chief' && r[1] === 'session.steer' && r[2].text === 'focus on Eindhoven'), 'steer goes through session.steer on the unit profile')
-const openBtn = Array.from(rootEl.querySelectorAll('button')).find(b => b.textContent === 'Open chat'); await act(async () => { openBtn.click() })
+const openBtn = Array.from(rootEl.querySelectorAll('.ck-drawer button')).find(b => b.textContent === 'Open chat'); await act(async () => { openBtn.click() })
 assert(log.newChat[0] === 'chief', 'Open chat → host.newChat(profile)')
 // task creation POSTs /task
 const taskInput = Array.from(rootEl.querySelectorAll('input')).find(i => /task title/.test(i.placeholder))
