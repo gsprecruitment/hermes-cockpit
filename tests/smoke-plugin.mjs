@@ -122,7 +122,7 @@ await act(async () => { rootR.render(route.render()) }); await act(async () => {
 const text = rootEl.textContent
 assert(/needs you/.test(text) && /working/.test(text) && /tokens/.test(text), 'mission bar renders KPIs')
 assert(T.$prefs.get().view === 'grid' && T.$prefs.get().theme === 'gsp', 'defaults: grid view, gsp theme')
-assert(rootEl.querySelectorAll('canvas').length === 1 && rootEl.querySelector('[data-ck-theme=gsp]') && rootEl.querySelector('.ck-main').parentElement.className.includes('ck-body') && /min-height:360px/.test(window.document.querySelector('style').textContent.replace(/\s/g, '')), 'grid is the default view: only the swimlanes canvas, gsp theme attribute')
+assert(rootEl.querySelectorAll('canvas').length === 1 && rootEl.querySelector('[data-ck-theme=gsp]') && rootEl.querySelector('.ck-main').parentElement.className.includes('ck-body') && rootEl.querySelector('.ck-scroll .ck-grid'), 'grid is the default view: only the swimlanes canvas, gsp theme attribute')
 assert(/Leadership/.test(text) && /board:/.test(text), 'group rail + pipeline strip')
 const tiles = rootEl.querySelectorAll('.ck-tile')
 assert(tiles.length === Object.keys(LIVE.units).length && rootEl.querySelectorAll('.ck-col').length === 3, 'unit grid: one tile per unit, one column per group')
@@ -187,6 +187,35 @@ await act(async () => { await sleep(30) })
 assert(/RPC-only picture/.test(rootEl.textContent), 'rpc banner shown during the auth failure')
 restMode = 'live'; await sleep(200)
 assert(T.$mode.get() === 'live' && T.$snap.get().units.chief, 'sensor reachable again → live door re-engages')
+
+// ── 2c. fit the window: layout buckets, no horizontal scrollers, drawer as overlay below 1400 ───
+{
+  const L1 = T.chooseLayout(1236, 590), L2 = T.chooseLayout(1010, 600), L3 = T.chooseLayout(900, 520), L4 = T.chooseLayout(1500, 800)
+  assert(L1.size === 'medium' && L1.short && L2.size === 'narrow' && L2.short && L3.size === 'narrow' && L4.size === 'wide' && !L4.short, 'chooseLayout: 1236x590 medium+short, 1010x600 / 900x520 narrow+short, 1500x800 wide')
+  assert(!/overflow-x\s*:\s*(auto|scroll)/.test(readFileSync(path.join(root, 'desktop', 'plugin.js'), 'utf8')), 'no overflow-x auto/scroll anywhere in the plugin source')
+  const realRect = window.HTMLElement.prototype.getBoundingClientRect
+  for (const [w, h, size] of [[1236, 590, 'medium'], [1010, 600, 'narrow'], [900, 520, 'narrow'], [1500, 800, 'wide']]) {
+    window.HTMLElement.prototype.getBoundingClientRect = function () { return { width: w, height: h, left: 0, top: 0, right: w, bottom: h, x: 0, y: 0 } }
+    const host2 = window.document.createElement('div'); window.document.body.appendChild(host2); const r2 = ReactDOM.createRoot(host2)
+    T.$selected.set(null); T.$feedOpen.set(false)
+    await act(async () => { r2.render(route.render()) }); await act(async () => { await sleep(40) })
+    const page = host2.querySelector('.hermes-cockpit')
+    assert(page.getAttribute('data-ck-layout') === size && T.$dim.get().w === w, `${w}x${h}: layout ${size} chosen from the page's own size`)
+    const bad = Array.from(page.querySelectorAll('*')).concat([page]).filter(el => /^(auto|scroll)$/.test(window.getComputedStyle(el).overflowX))
+    assert(bad.length === 0, `${w}x${h}: no element has overflow-x auto/scroll`)
+    await act(async () => { T.$selected.set('chief') }); await act(async () => { await sleep(40) })
+    if (size === 'wide') assert(page.querySelector('.ck-side .ck-drawer') && !page.querySelector('.ck-over'), `${w}x${h}: drawer is the side column when wide`)
+    else {
+      assert(page.querySelector('.ck-over .ck-drawer') && !page.querySelector('.ck-side'), `${w}x${h}: drawer is an overlay below 1400`)
+      await act(async () => { window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' })) }); await act(async () => { await sleep(20) })
+      assert(!page.querySelector('.ck-over') && T.$selected.get() == null, `${w}x${h}: Esc closes the overlay`)
+      await act(async () => { T.$feedOpen.set(true); T.$tab && 0 }); await act(async () => { await sleep(20) })
+      assert(page.querySelector('.ck-over'), `${w}x${h}: feed button opens the overlay without a unit`)
+    }
+    await act(async () => { r2.unmount() }); host2.remove()
+  }
+  window.HTMLElement.prototype.getBoundingClientRect = realRect; T.$dim.set(T.chooseLayout(1000, 600)); T.$feedOpen.set(false); T.$selected.set(null)
+}
 
 // ── 3. rpc door ─────────────────────────────────────────────────────────────────────────
 restMode = 'fail'; await sleep(200)
