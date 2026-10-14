@@ -39,7 +39,8 @@ function useAtom(a) {
 const DEFAULT_PREFS = {
   pollMs: 4000, showLanes: true, laneMinutes: 60, density: 'comfortable', particles: true,
   reducedMotion: false, demo: false, showIdle: true, laneBy: 'group', focusOnNeedsYou: true,
-  theme: 'gsp', view: 'grid', queueCollapsed: false   // theme: 'gsp' house style | 'app' host variables; view: 'grid' | 'constellation'
+  theme: 'gsp', view: 'grid', queueCollapsed: false,
+  showKpis: null, showRail: null, showQueue: null, showFeed: null, drawerMode: 'auto', drawerW: null, queueH: null, lanesH: null, textSize: 'normal'   // null = smart default (shown); a user choice wins   // theme: 'gsp' house style | 'app' host variables; view: 'grid' | 'constellation'
 }
 const $prefs = atom(DEFAULT_PREFS)
 const $snap = atom(null)       // fleet snapshot (sensor shape, also produced by rpc/demo adapters)
@@ -53,7 +54,12 @@ const $replayT = atom(null)    // epoch seconds when scrubbing; null = live
 const $notice = atom(null)     // {text, kind}
 const $dim = atom({ w: 1200, h: 700, size: 'medium', short: false })  // the page's own size, measured
 const $feedOpen = atom(false)  // slide-over panel open on the feed tab without a unit
+const $queueOpen = atom(false)  // short layout: the needs-you card panel
+const $lanesOpen = atom(false)  // short layout: the swimlanes panel
+const $searchOpen = atom(false) // short layout: the search field over the rail
 const $tab = atom('unit')      // slide-over tab: 'unit' | 'feed'
+// Short layout (H < 650 css px): header is one bar row + one rail row + a 28px needs-you strip, lanes only as a panel.
+const SHORT_CHROME = { bar: 36, rail: 36, strip: 28 }
 // Layout buckets by the page's own size (not the screen): wide >= 1400, medium 1100-1399, narrow < 1100; short < 650 high.
 function chooseLayout(w, h) { return { w, h, size: w >= 1400 ? 'wide' : (w >= 1100 ? 'medium' : 'narrow'), short: h < 650 } }
 
@@ -67,7 +73,7 @@ function notice(text, kind = 'info') { $notice.set({ text, kind, at: Date.now() 
 const VAR_FALLBACK = { // VAR_FALLBACK: only used when a custom property is missing (never in the app)
   '--ck-text': '#e6e6e6', '--ck-muted': '#9aa0a6', '--ck-accent': '#7aa2ff', '--ck-line': 'rgba(127,127,127,.25)', '--ck-tip': 'rgba(60,60,60,.9)', // VAR_FALLBACK
   '--ck-s-blocked': '#f5c518', '--ck-s-failed': '#ef4e4e', '--ck-s-task': '#f2f5fa', '--ck-s-working': '#8fb3e8', '--ck-s-idle': '#5b6b85', '--ck-s-off': '#3a4760', // VAR_FALLBACK
-  '--ck-sans': 'system-ui, sans-serif', '--ck-mono': 'ui-monospace, monospace'
+  '--ck-z': '1', '--ck-sans': 'system-ui, sans-serif', '--ck-mono': 'ui-monospace, monospace'
 }
 function cssVar(el, name) {
   try { const v = getComputedStyle(el).getPropertyValue(name).trim(); if (v) return v } catch (e) { /* no DOM */ }
@@ -76,7 +82,7 @@ function cssVar(el, name) {
 function palette(el) {
   const g = (n) => cssVar(el, n)
   return {
-    text: g('--ck-text'), muted: g('--ck-muted'), accent: g('--ck-accent'), border: g('--ck-line'), tip: g('--ck-tip'), sans: g('--ck-sans'), mono: g('--ck-mono'),
+    text: g('--ck-text'), muted: g('--ck-muted'), accent: g('--ck-accent'), border: g('--ck-line'), tip: g('--ck-tip'), sans: g('--ck-sans'), mono: g('--ck-mono'), z: Number(g('--ck-z')) || 1,
     blocked: g('--ck-s-blocked'), failed: g('--ck-s-failed'), task: g('--ck-s-task'), working: g('--ck-s-working'), idle: g('--ck-s-idle'), off: g('--ck-s-off')
   }
 }
@@ -420,13 +426,13 @@ function Constellation({ ctx, onPick }) {
       L.clusters.forEach(cl => { if (!cl.hot) return; g2.strokeStyle = P[cl.hot]; g2.globalAlpha = 0.45; g2.beginPath(); g2.moveTo(L.cx, L.cy); g2.lineTo(cl.cx, cl.cy); g2.stroke(); g2.globalAlpha = 1 })
       // seat
       const seatU = view.units[view.owner]
-      g2.fillStyle = P.muted; g2.font = `10px ${P.sans}`; g2.textAlign = 'center'
+      g2.fillStyle = P.muted; g2.font = `${10 * P.z}px ${P.sans}`; g2.textAlign = 'center'
       g2.strokeStyle = P.muted; g2.beginPath(); g2.arc(L.cx, L.cy, 11, 0, Math.PI * 2); g2.stroke()
       if (seatU) { drawDot(g2, seatU.state, L.cx, L.cy, 5, P[seatU.state] || P.idle); A.hits.push({ p: view.owner, x: L.cx, y: L.cy }) }
       g2.fillText('you', L.cx, L.cy + 24)
-      const LB = orbitLabels(view, L, w, h, (t, bold) => { g2.font = bold ? `600 11px ${P.sans}` : `11px ${P.sans}`; return g2.measureText(t).width }, { sel, matches })
+      const LB = orbitLabels(view, L, w, h, (t, bold) => { g2.font = bold ? `600 ${11 * P.z}px ${P.sans}` : `${11 * P.z}px ${P.sans}`; return g2.measureText(t).width }, { sel, matches })
       LB.clusters.forEach(cl => {
-        g2.font = `600 11px ${P.sans}`; g2.globalAlpha = f.group && f.group !== cl.id ? 0.4 : 1; g2.fillStyle = f.group === cl.id ? P.accent : P.text; g2.textAlign = 'left'
+        g2.font = `600 ${11 * P.z}px ${P.sans}`; g2.globalAlpha = f.group && f.group !== cl.id ? 0.4 : 1; g2.fillStyle = f.group === cl.id ? P.accent : P.text; g2.textAlign = 'left'
         g2.fillText(cl.text, cl.box.x, cl.box.y + 11); g2.globalAlpha = 1; A.labels.push({ id: cl.id, ...cl.box })
       })
       // dots
@@ -445,13 +451,13 @@ function Constellation({ ctx, onPick }) {
       })
       LB.units.forEach(l => {
         g2.strokeStyle = P.muted; g2.globalAlpha = 0.5; g2.lineWidth = 1; g2.beginPath(); g2.moveTo(l.dot.x, l.dot.y); g2.lineTo(l.from.x, l.from.y); g2.stroke(); g2.globalAlpha = 1
-        g2.font = `11px ${P.sans}`; g2.fillStyle = l.sel ? P.accent : P.text; g2.textAlign = 'left'; g2.fillText(l.text, l.box.x, l.box.y + 11)
+        g2.font = `${11 * P.z}px ${P.sans}`; g2.fillStyle = l.sel ? P.accent : P.text; g2.textAlign = 'left'; g2.fillText(l.text, l.box.x, l.box.y + 11)
       })
       // hover tooltip
       const hv = A.hover && view.units[A.hover], hp = hv && (L.pos[A.hover])
       if (hv && hp) {
         const lines = [`${unitName(hv)} · ${STATE_LABEL[hv.state]}${hv.since ? ' · ' + fmtAge(view.ts - hv.since) : ''}`, unitTask(hv) ? `task: ${unitTask(hv).title}` : (hv.latest_session && hv.latest_session.title ? `last: ${hv.latest_session.title}` : ''), hv.model ? `model: ${hv.model}` : '', hv.cost_today_usd ? `today: ${fmtTok(hv.tokens_today)} tok · ${fmtUsd(hv.cost_today_usd)}` : ''].filter(Boolean)
-        g2.font = `11px ${P.sans}`; const tw = Math.max(...lines.map(l => g2.measureText(l).width)) + 16; const th = lines.length * 15 + 10
+        g2.font = `${11 * P.z}px ${P.sans}`; const tw = Math.max(...lines.map(l => g2.measureText(l).width)) + 16; const th = lines.length * 15 + 10
         const tx = Math.min(w - tw - 4, Math.max(4, hp.x + 12)), ty = Math.max(4, Math.min(h - th - 4, hp.y - th - 8))
         g2.fillStyle = P.tip; g2.fillRect(tx, ty, tw, th); g2.strokeStyle = P.muted; g2.lineWidth = 1; g2.strokeRect(tx + 0.5, ty + 0.5, tw - 1, th - 1)
         g2.fillStyle = P.text; g2.textAlign = 'left'; lines.forEach((l, i) => g2.fillText(l, tx + 8, ty + 16 + i * 15))
@@ -478,7 +484,7 @@ function Constellation({ ctx, onPick }) {
 function nearest(hist, t) { let best = null, bd = Infinity; for (const p of hist) { const d = Math.abs(p.ts - t); if (d < bd) { bd = d; best = p } } return best }
 
 // ── swimlanes (history strip with replay scrubber) ──────────────────────────────────────
-function Swimlanes() {
+function Swimlanes({ ctx }) {
   const ref = useRef(null); const wrap = useRef(null)
   const snap = useAtom($snap); const hist = useAtom($history); const prefs = useAtom($prefs); const replayT = useAtom($replayT); const selected = useAtom($selected); const dimS = useAtom($dim)
   const rows = useMemo(() => {
@@ -496,7 +502,7 @@ function Swimlanes() {
       const P = palette(c); const now = snap.ts; const span = prefs.laneMinutes * 60; const x0 = 110, x1 = w - 8
       const X = (t) => x0 + ((t - (now - span)) / span) * (x1 - x0)
       const rowH = Math.max(8, Math.min(20, (h - 18) / Math.max(1, rows.length)))
-      ctx2.font = `11px ${P.sans}`
+      ctx2.font = `${11 * P.z}px ${P.sans}`
       rows.forEach((row, i) => {
         const y = 4 + i * rowH
         ctx2.fillStyle = P.muted; ctx2.textAlign = 'right'; ctx2.fillText(row.label.slice(0, 16), x0 - 8, y + rowH * 0.65)
@@ -515,7 +521,7 @@ function Swimlanes() {
         })
       })
       // time ticks
-      ctx2.fillStyle = P.muted; ctx2.textAlign = 'center'; ctx2.font = `10px ${P.mono}`
+      ctx2.fillStyle = P.muted; ctx2.textAlign = 'center'; ctx2.font = `${10 * P.z}px ${P.mono}`
       for (let m = 0; m <= prefs.laneMinutes; m += Math.max(5, Math.round(prefs.laneMinutes / 6))) { const x = X(now - m * 60); ctx2.fillRect(x, h - 14, 1, 4); ctx2.fillText(m === 0 ? 'now' : `-${m}m`, x, h - 2) }
       if (replayT != null) { const x = X(replayT); ctx2.fillStyle = P.text; ctx2.fillRect(x, 0, 1.5, h - 16); ctx2.textAlign = 'left'; ctx2.fillText(fmtClock(replayT), Math.min(x + 4, w - 70), 10) }
     }
@@ -529,9 +535,11 @@ function Swimlanes() {
     const frac = Math.max(0, Math.min(1, (x - x0) / (x1 - x0))); $replayT.set(snap.ts - prefs.laneMinutes * 60 * (1 - frac))
   }
   const drag = useRef(false)
+  const autoH = Math.max(60, Math.min(dimS.short ? 96 : 140, 22 + rows.length * 12))
   return jsxs('div', { className: 'ck-lanes-box', children: [
+    ctx && jsx(Handle, liveHandle(ctx, 'lanesH', { axis: 'y', sign: -1, value: prefs.lanesH || autoH, min: 60, max: 400, label: 'Swimlanes height', cls: 'ht' })),
     jsxs('div', { className: 'ck-lh', children: [`last ${prefs.laneMinutes} min`, ...STATES.map(s => jsxsk('span', { key: s, className: `ck-leg ck-st-${s}`, children: [jsx(Glyph, { s }), STATE_LABEL[s]] }))] }),
-    jsx('div', { ref: wrap, className: 'ck-lanes', style: { height: Math.max(60, Math.min(dimS.short ? 96 : 140, 22 + rows.length * 12)), position: 'relative' }, children:
+    jsx('div', { ref: wrap, className: 'ck-lanes', style: { height: prefs.lanesH || Math.max(60, Math.min(dimS.short ? 96 : 140, 22 + rows.length * 12)), position: 'relative' }, children:
       jsx('canvas', { ref, 'aria-label': 'Swimlanes', role: 'img', style: { display: 'block', cursor: 'ew-resize' },
         onMouseDown: (e) => { drag.current = true; scrub(e) }, onMouseMove: (e) => { if (drag.current) scrub(e) },
         onMouseUp: (e) => { drag.current = false }, onMouseLeave: () => { drag.current = false }, onDoubleClick: () => $replayT.set(null) }) })
@@ -540,7 +548,7 @@ function Swimlanes() {
 
 // ── house style: one injected stylesheet; palette lives in CSS custom properties ─────────
 // theme 'gsp' = navy/gold house style; theme 'app' maps the same names onto the app's --ui-* variables.
-const CK_CSS = `
+const CK_RAW = `
 .hermes-cockpit[data-ck-theme=gsp]{--ck-bg:#0A1628;--ck-surface:#0F1F38;--ck-tip:#16294A;--ck-accent:#FAC800;--ck-on-accent:#0A1628;} /* VAR_FALLBACK */
 .hermes-cockpit[data-ck-theme=gsp]{--ck-text:#E8ECF3;--ck-muted:#8B97AD;--ck-line:rgba(255,255,255,.08);--ck-line-gold:rgba(250,200,0,.10);} /* VAR_FALLBACK */
 .hermes-cockpit[data-ck-theme=gsp]{--ck-s-blocked:#FAC800;--ck-s-failed:#FF5D5D;--ck-s-task:#F2F5FA;--ck-s-working:#8FB3E8;--ck-s-idle:#5B6B85;--ck-s-off:#3A4760;} /* VAR_FALLBACK */
@@ -679,8 +687,44 @@ const CK_CSS = `
 .ck-fr{display:flex;gap:8px;align-items:baseline;padding:2px 0;border-bottom:1px dashed var(--ck-line);}
 .ck-fr .tm{font:10px var(--ck-mono);color:var(--ck-muted);white-space:nowrap;}
 .ck-fr button{background:none;border:0;padding:0;text-align:left;}
+.ck-short .ck-bar{flex-wrap:nowrap;height:${SHORT_CHROME.bar}px;padding:0 10px;gap:0 10px;position:relative;}
+.ck-short .ck-title{flex:1 1 0;min-width:40px;font-size:15px;}
+.ck-short .ck-brand{flex:1 1 0;min-width:0;}
+.ck-short .ck-kcl{flex-wrap:nowrap;margin-left:0;gap:0 10px;}
+.ck-short .ck-chip{padding:0 6px;}
+.ck-short .ck-toast{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ck-short .ck-rail{flex-wrap:nowrap;height:${SHORT_CHROME.rail}px;padding:0 10px;align-items:center;position:relative;}
+.ck-short .ck-rchips{flex:1 1 0;max-height:24px;overflow:hidden;align-content:flex-start;}
+.ck-short .ck-rchips:has(.ck-pop){overflow:visible;}
+.ck-short .ck-board{display:none;}
+.ck-pop.right{left:auto;right:0;top:30px;min-width:220px;padding:8px 10px;display:flex;flex-direction:column;gap:6px;}
+.ck-searchbar{position:absolute;left:0;right:0;top:0;bottom:0;z-index:12;display:flex;align-items:center;gap:6px;padding:0 10px;background:var(--ck-surface);}
+.ck-searchbar .ck-input{flex:1;}
+.ck-strip{position:relative;display:flex;align-items:center;gap:6px;height:${SHORT_CHROME.strip}px;padding:0 10px;background:var(--ck-surface);border-bottom:1px solid var(--ck-line-gold);font-size:12px;white-space:nowrap;}
+.ck-strip .hd{font:600 11px var(--ck-sans);letter-spacing:.08em;text-transform:uppercase;color:var(--ck-accent);}
+.ck-strip .names{flex:1;min-width:0;display:flex;align-items:center;gap:4px;overflow:hidden;}
+.ck-strip .names button{border:0;background:none;padding:0 2px;color:var(--ck-text);font-size:12px;white-space:nowrap;}
+.ck-strip .names button:hover{color:var(--ck-accent);text-decoration:underline;}
+.ck-qover{position:absolute;left:0;right:0;top:100%;z-index:15;max-height:300px;overflow-y:auto;overflow-x:hidden;padding:8px 10px;background:var(--ck-surface);border-bottom:1px solid var(--ck-line-gold);box-shadow:0 10px 24px rgba(0,0,0,.4);}
+.ck-main{position:relative;}
+.ck-lanes-over{position:absolute;left:0;right:0;bottom:0;max-height:40%;overflow:hidden;z-index:12;background:var(--ck-bg);border-top:1px solid var(--ck-line-gold);box-shadow:0 -8px 20px rgba(0,0,0,.35);}
+.ck-lanes-over>.ck-btn{position:absolute;top:3px;right:8px;z-index:2;}
+.ck-handle{position:absolute;z-index:14;background:transparent;touch-action:none;}
+.ck-handle.v{left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;}
+.ck-handle.hb{left:0;right:0;bottom:-3px;height:6px;cursor:row-resize;}
+.ck-handle.ht{left:0;right:0;top:-3px;height:6px;cursor:row-resize;}
+.ck-handle:hover,.ck-handle:focus-visible,.ck-handle.drag{background:var(--ck-accent);outline:none;}
+.ck-side{position:relative;}
+.ck-lanes-box{position:relative;}
+.ck-lay label{display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;}
+.ck-lay .ck-row{margin:2px 0;}
+.ck-lay select{background:var(--ck-bg);color:var(--ck-text);border:1px solid var(--ck-line);border-radius:3px;padding:2px 4px;font-size:12px;}
+.ck-bar{position:relative;}
 @media (prefers-reduced-motion:reduce){.hermes-cockpit *{transition:none !important;animation:none !important;}}
 `
+
+// Every font size in the sheet is multiplied by --ck-z (text-size control: compact / normal / large).
+const CK_CSS = CK_RAW.replace(/(font(?:-size)?:(?:\s*\d{3}\s+|\s*))(\d+(?:\.\d+)?)px/g, '$1calc($2px*var(--ck-z,1))')
 
 const GLYPH = { blocked: '◆', failed: '✕', task: '▶', working: '●', idle: '○', off: '–' }
 const STATE_PRI = { blocked: 0, failed: 1, task: 2, working: 3, idle: 4, off: 5 }
@@ -717,8 +761,42 @@ const byPriority = (a, b) => (STATE_PRI[a.state] - STATE_PRI[b.state]) || (a.sin
 function Kpi({ v, l, tone, children }) { return jsxs('div', { className: cx('ck-kpi', tone), children: [jsx('b', { children: v }), jsx('span', { children: l }), children] }) }
 function LogoMark() { return jsx('svg', { width: 22, height: 22, viewBox: '0 0 22 22', 'aria-hidden': 'true', children: [jsx('path', { key: 'a', d: 'M11 1.5 20.5 11 11 20.5 1.5 11Z', fill: 'none', stroke: 'var(--ck-accent)', strokeWidth: 1.6 }), jsx('path', { key: 'b', d: 'M11 6.5 15.5 11 11 15.5 6.5 11Z', fill: 'var(--ck-accent)' })] }) }
 
+function Handle({ ctx, axis, sign, value, min, max, label, onChange, onCommit, onReset, cls }) {
+  const st = useRef(null); const [drag, setDrag] = useState(false)
+  const clamp = (v) => Math.max(min, Math.min(max, Math.round(v)))
+  const coord = (e) => axis === 'x' ? e.clientX : e.clientY
+  return jsx('div', { className: cx('ck-handle', cls, drag && 'drag'), role: 'separator', tabIndex: 0, 'aria-label': label, 'aria-orientation': axis === 'x' ? 'vertical' : 'horizontal', 'aria-valuemin': min, 'aria-valuemax': max, 'aria-valuenow': Math.round(value),
+    title: `${label} (drag, arrow keys, double-click to reset)`,
+    onPointerDown: (e) => { st.current = { c: coord(e), v: value }; setDrag(true); try { e.currentTarget.setPointerCapture(e.pointerId) } catch (x) { /* no capture */ } },
+    onPointerMove: (e) => { if (st.current) onChange(clamp(st.current.v + (coord(e) - st.current.c) * sign)) },
+    onPointerUp: (e) => { if (!st.current) return; const v = clamp(st.current.v + (coord(e) - st.current.c) * sign); st.current = null; setDrag(false); onCommit(v) },
+    onDoubleClick: () => onReset(),
+    onKeyDown: (e) => {
+      const k = axis === 'x' ? { ArrowRight: 1, ArrowLeft: -1 } : { ArrowDown: 1, ArrowUp: -1 }
+      if (k[e.key]) { e.preventDefault(); onCommit(clamp(value + 16 * k[e.key] * sign)) }
+    } })
+}
+// live width/height while dragging stays in memory; the pointer-up commit persists through setPrefs
+const liveHandle = (ctx, key, props) => ({ ctx, onChange: (v) => $prefs.set({ ...$prefs.get(), [key]: v }), onCommit: (v) => setPrefs(ctx, { [key]: v }), onReset: () => setPrefs(ctx, { [key]: null }), ...props })
+
+function LayoutMenu({ ctx }) {
+  const prefs = useAtom($prefs); const dim = useAtom($dim); const lanesOpen = useAtom($lanesOpen)
+  const Tg = (label, on, set) => jsxs('label', { children: [jsx('input', { type: 'checkbox', checked: on, onChange: (e) => set(e.target.checked) }), label] })
+  const sec = (key, label) => Tg(label, isOn(prefs, key), (v) => setPrefs(ctx, { [key]: v }))
+  const lanesOn = dim.short ? lanesOpen : prefs.showLanes
+  return jsxs('div', { className: 'ck-pop right ck-lay', role: 'dialog', 'aria-label': 'Layout', children: [
+    sec('showKpis', 'Key figures'), sec('showRail', 'Department rail'), sec('showQueue', 'Needs you'),
+    Tg('Swimlanes', !!lanesOn, (v) => dim.short ? $lanesOpen.set(v) : setPrefs(ctx, { showLanes: v })),
+    sec('showFeed', 'Feed'),
+    jsxs('label', { children: ['Drawer', jsx('select', { 'aria-label': 'Drawer placement', value: prefs.drawerMode, onChange: (e) => setPrefs(ctx, { drawerMode: e.target.value }), children: [['auto', 'Auto'], ['overlay', 'Always slide-over'], ['side', 'Always side column']].map(([v, l]) => jsxk('option', { key: v, value: v, children: l })) })] }),
+    jsxs('div', { className: 'ck-row', role: 'group', 'aria-label': 'Text size', children: ['Text', ...['compact', 'normal', 'large'].map(z => jsxk('button', { key: z, type: 'button', className: cx('ck-btn sm', prefs.textSize === z && 'on'), 'aria-pressed': prefs.textSize === z, onClick: () => setPrefs(ctx, { textSize: z }), children: z }))] }),
+    jsxs('div', { className: 'ck-row', role: 'group', 'aria-label': 'View', children: ['View', ...[['grid', 'Grid'], ['constellation', 'Orbit']].map(([v, l]) => jsxk('button', { key: v, type: 'button', className: cx('ck-btn sm', prefs.view === v && 'on'), 'aria-pressed': prefs.view === v, onClick: () => setPrefs(ctx, { view: v }), children: l })), jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => { $tab.set('feed'); $feedOpen.set(true) }, children: 'Open feed' })] }),
+    jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => resetLayout(ctx), children: 'Reset layout' })
+  ] })
+}
+
 function MissionBar({ ctx }) {
-  const snap = useAtom($snap); const mode = useAtom($mode); const err = useAtom($error); const filter = useAtom($filter); const prefs = useAtom($prefs); const n = useAtom($notice)
+  const snap = useAtom($snap); const mode = useAtom($mode); const err = useAtom($error); const filter = useAtom($filter); const prefs = useAtom($prefs); const n = useAtom($notice); const dim = useAtom($dim); const lanesOpen = useAtom($lanesOpen); const [more, setMore] = useState(false); const [lay, setLay] = useState(false); const short = dim.short; const kp = isOn(prefs, 'showKpis')
   const t = snap ? snap.totals : null; const counts = countStates(snap)
   const ceiling = snap && snap.spend_ceiling_usd; const spend = t ? t.cost_today_usd : 0; const over = !!(ceiling && spend > ceiling)
   const hb = snap && snap.gateway && snap.gateway.heartbeat_age_s
@@ -726,35 +804,46 @@ function MissionBar({ ctx }) {
   return jsxs('div', { className: 'ck-bar', children: [
     jsxs('div', { className: 'ck-brand', children: [
       jsx(LogoMark, {}), jsx('span', { className: 'ck-title', children: snap ? snap.title : 'Hermes Cockpit' }),
-      jsx('span', { className: 'ck-seg', role: 'group', 'aria-label': 'Data source', title: err || `data: ${mode}`, children: ['live', 'rpc', 'demo'].map(m => jsxk('span', { key: m, className: mode === m ? 'on' : '', 'aria-current': mode === m ? 'true' : undefined, children: m })) })
+      jsx('span', { className: 'ck-seg', role: 'group', 'aria-label': 'Data source', title: err || `data: ${mode}`, children: ['live', 'rpc', 'demo'].filter(m => !short || mode === m || !['live', 'rpc', 'demo'].includes(mode)).map(m => jsxk('span', { key: m, className: mode === m ? 'on' : '', 'aria-current': mode === m ? 'true' : undefined, children: m })) })
     ] }),
     jsx('div', { className: 'ck-chips', role: 'group', 'aria-label': 'Filter by state', children: STATES.map(s => {
       const on = filter.states.has(s)
       return jsxsk('button', { key: s, type: 'button', 'aria-pressed': on, title: `${on ? 'Hide' : 'Show'} ${STATE_LABEL[s]}`, 'aria-label': `${STATE_LABEL[s]} ${counts[s]}`, className: cx('ck-chip', `ck-st-${s}`, !on && 'dim', s === 'blocked' && counts.blocked > 0 && 'hot', s === 'failed' && counts.failed > 0 && 'bad'), onClick: () => toggleState(s), children: [jsx(Glyph, { s }), jsx('span', { className: 'lb', children: STATE_LABEL[s] }), jsx('span', { className: 'n', children: counts[s] })] })
     }) }),
     jsxs('div', { className: 'ck-kcl', children: [
-    t && jsx(Kpi, { v: `${fmtTok(t.tokens_per_min)}/min`, l: 'tokens' }),
-    t && jsx(Kpi, { v: fmtUsd(spend) + (ceiling ? ` / ${fmtUsd(ceiling)}` : ''), l: 'spend today', tone: over ? 'bad' : '', children: ceiling ? jsx('div', { className: cx('ck-gauge', over && 'over'), 'aria-hidden': 'true', children: jsx('i', { style: { width: `${Math.min(100, Math.round(spend / ceiling * 100))}%` } }) }) : null }),
-    snap && jsx(Kpi, { v: hb == null ? '—' : fmtAge(hb), l: 'gateway hb', tone: hb != null && hb > 300 ? 'warn' : '' }),
-    snap && (snap.signals || []).map(sg => jsxk(Kpi, { key: sg.id, v: sg.age_s == null ? '—' : fmtAge(sg.age_s), l: sg.label, tone: sg.ok ? '' : 'bad' })),
-    jsx('button', { type: 'button', className: 'ck-btn sm', title: 'Swimlanes (L)', 'aria-pressed': !!prefs.showLanes, onClick: () => setPrefs(ctx, { showLanes: !prefs.showLanes }), children: prefs.showLanes ? 'lanes ▾' : 'lanes ▸' }),
-    n && Date.now() - n.at < 6000 && jsx('span', { role: 'status', className: cx('ck-toast', n.kind), children: n.text })
+    kp && t && jsx(Kpi, { v: `${fmtTok(t.tokens_per_min)}/min`, l: 'tokens' }),
+    kp && t && (short
+      ? jsx(Kpi, { v: fmtUsd(spend) + (ceiling ? ` / ${fmtUsd(ceiling)}` : ''), l: 'spend today', tone: over ? 'bad' : '' })
+      : jsx(Kpi, { v: fmtUsd(spend) + (ceiling ? ` / ${fmtUsd(ceiling)}` : ''), l: 'spend today', tone: over ? 'bad' : '', children: ceiling ? jsx('div', { className: cx('ck-gauge', over && 'over'), 'aria-hidden': 'true', children: jsx('i', { style: { width: `${Math.min(100, Math.round(spend / ceiling * 100))}%` } }) }) : null })),
+    kp && !short && snap && jsx(Kpi, { v: hb == null ? '—' : fmtAge(hb), l: 'gateway hb', tone: hb != null && hb > 300 ? 'warn' : '' }),
+    kp && !short && snap && (snap.signals || []).map(sg => jsxk(Kpi, { key: sg.id, v: sg.age_s == null ? '—' : fmtAge(sg.age_s), l: sg.label, tone: sg.ok ? '' : 'bad' })),
+    !short && jsx('button', { type: 'button', className: 'ck-btn sm', title: 'Swimlanes (L)', 'aria-pressed': !!prefs.showLanes, onClick: () => setPrefs(ctx, { showLanes: !prefs.showLanes }), children: prefs.showLanes ? 'lanes ▾' : 'lanes ▸' }),
+    n && Date.now() - n.at < 6000 && jsx('span', { role: 'status', className: cx('ck-toast', n.kind), children: n.text }),
+    jsx('button', { type: 'button', className: cx('ck-btn sm', lay && 'on'), 'aria-expanded': lay, 'aria-haspopup': 'dialog', 'aria-label': 'Layout', title: 'Layout: show, hide, text size', onClick: () => { setLay(!lay); setMore(false) }, children: '▦' }),
+    short && jsx('button', { type: 'button', className: cx('ck-btn sm', more && 'on'), 'aria-expanded': more, 'aria-haspopup': 'true', title: 'More: gateway, signals, swimlanes', onClick: () => { setMore(!more); setLay(false) }, children: '⋯' })
+    ] }),
+    lay && jsx(LayoutMenu, { ctx }),
+    short && more && jsxs('div', { className: 'ck-pop right', role: 'menu', children: [
+      kp && snap && jsx(Kpi, { v: hb == null ? '—' : fmtAge(hb), l: 'gateway hb', tone: hb != null && hb > 300 ? 'warn' : '' }),
+      kp && snap && (snap.signals || []).map(sg => jsxk(Kpi, { key: sg.id, v: sg.age_s == null ? '—' : fmtAge(sg.age_s), l: sg.label, tone: sg.ok ? '' : 'bad' })),
+      jsx('button', { type: 'button', className: 'ck-btn sm', 'aria-pressed': lanesOpen, onClick: () => { $lanesOpen.set(!lanesOpen); setMore(false) }, children: lanesOpen ? 'Hide swimlanes' : 'Show swimlanes' })
     ] })
   ] })
 }
 
-// Department chips wrap onto at most two rows; whatever does not fit goes into a "+N" popover (no scrollbars).
 function GroupRail({ ctx }) {
   const snap = useAtom($snap); const filter = useAtom($filter); const prefs = useAtom($prefs); const dim = useAtom($dim); const feedOpen = useAtom($feedOpen)
-  const [cut, setCut] = useState(null); const [pop, setPop] = useState(false); const box = useRef(null)
-  const sig = snap ? (snap.groups || []).map(g => g.id + ':' + g.profiles.length).join('|') + '|' + (filter.group || '') + '|' + dim.w : ''
+  const [cut, setCut] = useState(null); const [pop, setPop] = useState(false); const box = useRef(null); const searchOpen = useAtom($searchOpen); const short = dim.short; const sIn = useRef(null)
+  useEffect(() => { if (searchOpen && sIn.current) sIn.current.focus() }, [searchOpen])
+  const sig = snap ? (snap.groups || []).map(g => g.id + ':' + g.profiles.length).join('|') + '|' + (filter.group || '') + '|' + dim.w + '|' + (dim.short ? 1 : 2) : ''
   useEffect(() => { setCut(null); setPop(false) }, [sig])
   useEffect(() => { // phase 2: after a full render, count how many chips land in the first two rows
     if (cut !== null) return; const el = box.current; if (!el) return
     const kids = Array.from(el.querySelectorAll('[data-chip]')); if (!kids.length) return
     const tops = Array.from(new Set(kids.map(k => k.offsetTop))).sort((a, b) => a - b)
-    if (tops.length <= 2) { setCut(kids.length); return }
-    setCut(Math.max(1, kids.filter(k => k.offsetTop < tops[2]).length - 1))
+    const rows = dim.short ? 1 : 2
+    if (tops.length <= rows) { setCut(kids.length); return }
+    setCut(Math.max(1, kids.filter(k => k.offsetTop < tops[rows]).length - 1))
   })
   if (!snap) return null
   const pick = (id) => { $filter.set({ ...filter, group: filter.group === id ? null : id }); setPop(false) }
@@ -762,6 +851,10 @@ function GroupRail({ ctx }) {
   const shown = cut == null ? chips : chips.slice(0, cut); const hidden = cut == null ? [] : chips.slice(cut)
   const chip = (c) => jsxsk('button', { key: String(c.id), 'data-chip': '1', type: 'button', className: cx('ck-chip', filter.group === c.id && 'sel'), 'aria-pressed': filter.group === c.id, onClick: () => pick(c.id), children: [c.label, ' ', jsx('span', { className: 'n', children: c.n }), c.hot ? jsx('span', { className: 'ck-dot', title: 'needs you or failed' }) : null, c.hot ? jsx('span', { className: 'ck-sr', children: ' needs attention' }) : null] })
   return jsxs('div', { className: 'ck-rail', children: [
+    short && searchOpen && jsxs('div', { className: 'ck-searchbar', children: [
+      jsx('input', { ref: sIn, className: 'ck-input', 'aria-label': 'Find unit or task id', placeholder: 'Find unit or task id', 'data-ck-search': '1', value: filter.q, onChange: (e) => $filter.set({ ...filter, q: e.target.value }), onKeyDown: (e) => { if (e.key === 'Escape' || e.key === 'Enter') { e.stopPropagation(); $searchOpen.set(false) } } }),
+      jsx('button', { type: 'button', className: 'ck-btn sm', 'aria-label': 'Close search', onClick: () => { $searchOpen.set(false) }, children: '×' })
+    ] }),
     jsxs('div', { ref: box, className: 'ck-rchips', children: [
       ...shown.map(chip),
       hidden.length ? jsxs('button', { type: 'button', className: cx('ck-chip', hidden.some(c => filter.group === c.id) && 'sel'), 'aria-expanded': pop, 'aria-haspopup': 'true', onClick: () => setPop(!pop), children: [`+${hidden.length}`, hidden.some(c => c.hot) ? jsx('span', { className: 'ck-dot', title: 'needs you or failed' }) : null] }) : null,
@@ -769,39 +862,49 @@ function GroupRail({ ctx }) {
     ] }),
     snap.pipeline && Object.keys(snap.pipeline).length ? jsx('span', { className: 'ck-board', style: { alignSelf: 'center' }, children: 'board: ' + ['todo', 'ready', 'running', 'blocked', 'review', 'done'].filter(k => snap.pipeline[k] != null).map(k => `${k} ${snap.pipeline[k]}`).join(' · ') }) : null,
     jsxs('div', { className: 'ck-rpin', children: [
-      jsx('input', { className: 'ck-input', 'aria-label': 'Find unit or task id', placeholder: 'Find unit or task id', 'data-ck-search': '1', value: filter.q, onChange: (e) => $filter.set({ ...filter, q: e.target.value }) }),
+      !short && jsx('input', { className: 'ck-input', 'aria-label': 'Find unit or task id', placeholder: 'Find unit or task id', 'data-ck-search': '1', value: filter.q, onChange: (e) => $filter.set({ ...filter, q: e.target.value }) }),
+      short && jsx('button', { type: 'button', className: cx('ck-btn sm', filter.q && 'on'), 'aria-label': 'Find unit or task id', title: 'Find unit or task id', onClick: () => $searchOpen.set(true), children: '🔍' }),
       jsxs('span', { className: 'ck-vt', role: 'group', 'aria-label': 'View', children: [
         jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view !== 'constellation' && 'on'), 'aria-pressed': prefs.view !== 'constellation', onClick: () => setPrefs(ctx, { view: 'grid' }), children: 'Grid' }),
         jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view === 'constellation' && 'on'), 'aria-pressed': prefs.view === 'constellation', onClick: () => setPrefs(ctx, { view: 'constellation' }), children: 'Orbit' })
       ] }),
-      dim.size !== 'wide' && jsx('button', { type: 'button', className: cx('ck-btn sm', feedOpen && 'on'), 'aria-pressed': feedOpen, title: 'Event feed', onClick: () => { $tab.set('feed'); $feedOpen.set(!feedOpen) }, children: 'Feed' })
+      (!drawerSide(prefs, dim) && isOn(prefs, 'showFeed')) && jsx('button', { type: 'button', className: cx('ck-btn sm', feedOpen && 'on'), 'aria-pressed': feedOpen, title: 'Event feed', onClick: () => { $tab.set('feed'); $feedOpen.set(!feedOpen) }, children: 'Feed' })
     ] })
   ] })
 }
 
 function NeedsQueue({ ctx }) {
-  const snap = useAtom($snap); const filter = useAtom($filter); const prefs = useAtom($prefs); const dim = useAtom($dim); const [showAll, setShowAll] = useState(false)
+  const snap = useAtom($snap); const filter = useAtom($filter); const prefs = useAtom($prefs); const dim = useAtom($dim); const [showAll, setShowAll] = useState(false); const qOpen = useAtom($queueOpen)
   if (!snap) return null
   const list = unitsOf(snap).filter(u => (u.state === 'blocked' || u.state === 'failed') && (!filter.group || u.group === filter.group) && unitMatches(u, filter.q)).sort(byPriority)
   if (!list.length) return null
   const nb = list.filter(u => u.state === 'blocked').length, nf = list.length - nb; const open = !prefs.queueCollapsed
   const cols = Math.max(1, Math.floor((dim.w - 24 + 8) / 308)); const cap = cols * (dim.short ? 1 : 2); const more = list.length > cap
   const vis = more && !showAll ? list.slice(0, cap) : list
+  const card = (u) => {
+    const t = unitTask(u)
+    return jsxsk('div', { key: u.profile, className: `ck-card ck-st-${u.state}`, children: [
+      jsxs('button', { type: 'button', className: 'ck-cb', onClick: () => { $selected.set(u.profile); $queueOpen.set(false) }, 'aria-label': `${unitName(u)}, ${STATE_LABEL[u.state]}${t ? ', ' + t.title : ''}`, children: [
+        jsxs('span', { className: 'ck-l1', children: [jsx(Glyph, { s: u.state }), jsx('span', { className: 'nm', children: unitName(u) }), jsx('span', { className: 'gr', children: groupLabel(snap, u) }), jsx('span', { className: 'age', children: fmtAge(snap.ts - u.since) })] }),
+        jsxs('span', { className: 'ck-l2', children: [t && jsx('span', { className: 'id', children: t.id }), jsx('span', { className: 'tt', children: t ? t.title : STATE_LABEL[u.state] })] })
+      ] }),
+      jsxs('div', { className: 'ck-ca', children: [
+        jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => actions.openChat(u.profile), children: 'Open chat' }),
+        u.state === 'blocked' && jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => { $queueOpen.set(false); actions.handCard(u.profile) }, children: 'Hand a card' })
+      ] })
+    ] })
+  }
+  if (dim.short) { // one 28px strip; the cards open as a panel over the main area, never pushing it down
+    return jsxs('section', { className: 'ck-strip', 'aria-label': 'Needs you', children: [
+      jsx('span', { className: 'hd', children: `◆ ${list.length} need${list.length === 1 ? 's' : ''} you${nf ? ` · ${nf} failed` : ''}:` }),
+      jsx('span', { className: 'names', children: list.flatMap((u, i) => [i ? jsx('span', { key: 'd' + u.profile, 'aria-hidden': 'true', children: '·' }) : null, jsxk('button', { key: u.profile, type: 'button', title: `${STATE_LABEL[u.state]}: ${(unitTask(u) || {}).title || ''}`, onClick: () => { $selected.set(u.profile); $queueOpen.set(false) }, children: unitName(u) })]) }),
+      jsx('button', { type: 'button', className: 'ck-btn sm', 'aria-expanded': qOpen, 'aria-label': qOpen ? 'Close the needs-you panel' : 'Open all needs-you cards', onClick: () => $queueOpen.set(!qOpen), children: qOpen ? '▴' : '▾' }),
+      qOpen && jsxs('div', { className: 'ck-qover', style: { maxHeight: prefs.queueH || 300 }, children: [jsx('div', { className: 'ck-qrow', children: list.map(card) }), jsx(Handle, liveHandle(ctx, 'queueH', { axis: 'y', sign: 1, value: prefs.queueH || 300, min: 80, max: 600, label: 'Needs-you panel height', cls: 'hb' }))] })
+    ] })
+  }
   return jsxs('section', { className: 'ck-queue', 'aria-label': 'Needs you', children: [
     jsxs('div', { className: 'ck-qh', children: [`◆ needs you · ${nb} waiting · ${nf} failed`, jsx('button', { type: 'button', 'aria-expanded': open, 'aria-label': open ? 'Collapse the needs-you queue' : 'Expand the needs-you queue', onClick: () => setPrefs(ctx, { queueCollapsed: open }), children: open ? '▾' : '▸' }), open && more ? jsx('button', { type: 'button', className: 'ck-btn sm', 'aria-expanded': showAll, onClick: () => setShowAll(!showAll), children: showAll ? 'show fewer' : `show all ${list.length}` }) : null] }),
-    open && jsx('div', { className: 'ck-qrow', children: vis.map(u => {
-      const t = unitTask(u)
-      return jsxsk('div', { key: u.profile, className: `ck-card ck-st-${u.state}`, children: [
-        jsxs('button', { type: 'button', className: 'ck-cb', onClick: () => $selected.set(u.profile), 'aria-label': `${unitName(u)}, ${STATE_LABEL[u.state]}${t ? ', ' + t.title : ''}`, children: [
-          jsxs('span', { className: 'ck-l1', children: [jsx(Glyph, { s: u.state }), jsx('span', { className: 'nm', children: unitName(u) }), jsx('span', { className: 'gr', children: groupLabel(snap, u) }), jsx('span', { className: 'age', children: fmtAge(snap.ts - u.since) })] }),
-          jsxs('span', { className: 'ck-l2', children: [t && jsx('span', { className: 'id', children: t.id }), jsx('span', { className: 'tt', children: t ? t.title : STATE_LABEL[u.state] })] })
-        ] }),
-        jsxs('div', { className: 'ck-ca', children: [
-          jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => actions.openChat(u.profile), children: 'Open chat' }),
-          u.state === 'blocked' && jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => actions.handCard(u.profile), children: 'Hand a card' })
-        ] })
-      ] })
-    }) })
+    open && jsx('div', { className: 'ck-qrow', children: vis.map(card) })
   ] })
 }
 
@@ -927,11 +1030,21 @@ function Feed() {
   ] })
 }
 
+// Layout switches (null = smart default, which is "shown"); Reset puts every one back.
+const LAYOUT_DEFAULTS = { showKpis: null, showRail: null, showQueue: null, showFeed: null, drawerMode: 'auto', drawerW: null, queueH: null, lanesH: null, textSize: 'normal' }
+const isOn = (p, k) => p[k] !== false
+const TEXT_Z = { compact: 0.9, normal: 1, large: 1.15 }
+const drawerSide = (p, dim) => p.drawerMode === 'side' || (p.drawerMode !== 'overlay' && dim.size === 'wide')
+function resetLayout(ctx) {
+  const auto = $dim.get().h < 800; const next = { ...$prefs.get(), ...LAYOUT_DEFAULTS, showLanes: !auto }
+  $prefs.set(next); autoLanesOff = auto; const store = { ...next }; if (auto) delete store.showLanes
+  try { ctx.storage.set('prefs', store) } catch (e) { /* storage unavailable */ }
+}
 let autoLanesOff = false // lanes were switched off for a short window, not by the user: do not persist that
 function setPrefs(ctx, patch) { const next = { ...$prefs.get(), ...patch }; $prefs.set(next); if ('showLanes' in patch) autoLanesOff = false; const store = { ...next }; if (autoLanesOff) delete store.showLanes; try { ctx.storage.set('prefs', store) } catch (e) { /* storage unavailable */ } }
 
 function Page({ ctx }) {
-  const prefs = useAtom($prefs); const mode = useAtom($mode); const dim = useAtom($dim); const sel = useAtom($selected); const feedOpen = useAtom($feedOpen); const tab = useAtom($tab)
+  const prefs = useAtom($prefs); const mode = useAtom($mode); const dim = useAtom($dim); const sel = useAtom($selected); const feedOpen = useAtom($feedOpen); const tab = useAtom($tab); const lanesOpen = useAtom($lanesOpen)
   const root = useRef(null)
   useEffect(() => { // first load in a short window: lanes off unless the user has ever set the pref
     const el = root.current; if (!el) return
@@ -946,22 +1059,25 @@ function Page({ ctx }) {
     const ro = new ResizeObserver(measure); ro.observe(el); return () => ro.disconnect()
   }, [])
   useEffect(() => { if (sel) $tab.set('unit') }, [sel])
-  const wide = dim.size === 'wide'; const over = !wide && (sel || feedOpen)
+  const side = drawerSide(prefs, dim); const showFeed = isOn(prefs, 'showFeed'); const over = !side && (sel || (feedOpen && showFeed)); const dw = prefs.drawerW
+  useEffect(() => { if (!showFeed && tab === 'feed') $tab.set('unit') }, [showFeed])
   const closeOver = () => { $selected.set(null); $feedOpen.set(false) }
-  return jsxs('div', { ref: root, className: cx('hermes-cockpit', `ck-${dim.size}`, dim.short && 'ck-short', prefs.density === 'compact' && 'ck-compact'), 'data-ck-theme': prefs.theme === 'app' ? 'app' : 'gsp', 'data-ck-layout': dim.size, children: [
+  return jsxs('div', { ref: root, className: cx('hermes-cockpit', `ck-${dim.size}`, dim.short && 'ck-short', prefs.density === 'compact' && 'ck-compact'), 'data-ck-theme': prefs.theme === 'app' ? 'app' : 'gsp', 'data-ck-layout': dim.size, style: { '--ck-z': TEXT_Z[prefs.textSize] || 1 }, children: [
     jsx('style', { children: CK_CSS }),
     jsx(MissionBar, { ctx }),
-    jsx(GroupRail, { ctx }),
+    isOn(prefs, 'showRail') && jsx(GroupRail, { ctx }),
     mode === 'demo' && jsx('div', { className: 'ck-note demo', children: prefs.demo ? 'Demo data (Settings → Plugins → Hermes Cockpit to turn off).' : 'Showing demo data: the sensor is not enabled on this backend and RPC is unreachable. Enable `hermes-cockpit` in plugins.enabled for the live picture.' }),
     mode === 'rpc' && jsx('div', { className: 'ck-note', children: 'RPC-only picture: sessions per profile, no board/cost. The sensor half is not reachable at /api/plugins/hermes-cockpit — add `hermes-cockpit` to plugins.enabled on the backend, and check its dashboard/manifest.json `name` equals `hermes-cockpit` (the API mounts under /api/plugins/<manifest name>/).' }),
-    jsx(NeedsQueue, { ctx }),
+    isOn(prefs, 'showQueue') && jsx(NeedsQueue, { ctx }),
     jsxs('div', { className: 'ck-body', children: [
-      jsxs('div', { className: 'ck-main', children: [prefs.view === 'constellation' ? jsx(Constellation, { ctx }) : jsx('div', { className: 'ck-scroll', children: jsx(UnitGrid, {}) }), prefs.showLanes && jsx(Swimlanes, {})] }),
-      wide && jsxs('div', { className: 'ck-side', children: [jsx(Drawer, { ctx }), jsx(Feed, {})] }),
-      over && jsxs('div', { className: 'ck-over', role: 'dialog', 'aria-label': 'Unit and feed', children: [
+      jsxs('div', { className: 'ck-main', children: [prefs.view === 'constellation' ? jsx(Constellation, { ctx }) : jsx('div', { className: 'ck-scroll', children: jsx(UnitGrid, {}) }), !dim.short && prefs.showLanes && jsx(Swimlanes, { ctx }),
+        dim.short && lanesOpen && jsxs('div', { className: 'ck-lanes-over', style: { maxHeight: prefs.lanesH ? '80%' : '40%' }, children: [jsx('button', { type: 'button', className: 'ck-btn sm', 'aria-label': 'Close swimlanes', onClick: () => $lanesOpen.set(false), children: '×' }), jsx(Swimlanes, { ctx })] })] }),
+      side && jsxs('div', { className: 'ck-side', style: { width: dw || 320 }, children: [jsx(Handle, liveHandle(ctx, 'drawerW', { axis: 'x', sign: -1, value: dw || 320, min: 260, max: 560, label: 'Drawer width', cls: 'v' })), jsx(Drawer, { ctx }), showFeed && jsx(Feed, {})] }),
+      over && jsxs('div', { className: 'ck-over', role: 'dialog', 'aria-label': 'Unit and feed', style: dw ? { width: `min(${dw}px, 90%)` } : undefined, children: [
+        jsx(Handle, liveHandle(ctx, 'drawerW', { axis: 'x', sign: -1, value: dw || 380, min: 260, max: 560, label: 'Drawer width', cls: 'v' })),
         jsxs('div', { className: 'ck-tabs', children: [
           jsx('button', { type: 'button', className: cx('ck-btn sm', tab === 'unit' && 'on'), 'aria-pressed': tab === 'unit', onClick: () => $tab.set('unit'), children: 'Unit' }),
-          jsx('button', { type: 'button', className: cx('ck-btn sm', tab === 'feed' && 'on'), 'aria-pressed': tab === 'feed', onClick: () => $tab.set('feed'), children: 'Feed' }),
+          showFeed && jsx('button', { type: 'button', className: cx('ck-btn sm', tab === 'feed' && 'on'), 'aria-pressed': tab === 'feed', onClick: () => $tab.set('feed'), children: 'Feed' }),
           jsx('span', { className: 'ck-sp' }),
           jsx('button', { type: 'button', className: 'ck-btn sm', 'aria-label': 'Close panel', onClick: closeOver, children: '×' })
         ] }),
@@ -994,11 +1110,16 @@ function Settings({ ctx }) {
   const p = useAtom($prefs)
   const Row = (label, control, help) => jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid var(--ui-border)' }, children: [jsxs('div', { style: { flex: 1 }, children: [jsx('div', { style: { color: 'var(--ui-text)', fontSize: 13 }, children: label }), help && jsx('div', { style: { color: 'var(--ui-text-secondary)', fontSize: 11 }, children: help })] }), control] })
   const Toggle = (k) => jsx('input', { type: 'checkbox', checked: !!p[k], onChange: e => setPrefs(ctx, { [k]: e.target.checked }) })
+  const Tri = (k) => jsx('input', { type: 'checkbox', checked: p[k] !== false, onChange: e => setPrefs(ctx, { [k]: e.target.checked }) })
   const Num = (k, min, max, step) => jsx('input', { type: 'number', min, max, step, value: p[k], style: { ...S.input, minWidth: 80 }, onChange: e => setPrefs(ctx, { [k]: Number(e.target.value) }) })
   const Sel = (k, opts) => jsx('select', { value: p[k], style: S.input, onChange: e => setPrefs(ctx, { [k]: e.target.value }), children: opts.map(o => jsxk('option', { key: o, value: o, children: o })) })
   return jsxs('div', { style: { padding: '4px 0', maxWidth: 640 }, children: [
     Row('Theme', Sel('theme', ['gsp', 'app']), 'gsp: GSP house style (navy, gold). app: the host app\'s own theme variables.'),
     Row('Main view', Sel('view', ['grid', 'constellation']), 'Grid: one column per group. Constellation: the canvas map.'),
+    Row('Key figures in the mission bar', Tri('showKpis')), Row('Department rail', Tri('showRail')), Row('Needs-you strip / cards', Tri('showQueue')), Row('Feed', Tri('showFeed')),
+    Row('Drawer placement', Sel('drawerMode', ['auto', 'overlay', 'side']), 'auto: side column when the page is 1400px wide or more, slide-over otherwise.'),
+    Row('Text size', Sel('textSize', ['compact', 'normal', 'large']), 'Scales the cockpit\'s own text, to counter the app zoom.'),
+    jsx('div', { style: { padding: '8px 0' }, children: jsx('button', { style: S.btn, onClick: () => resetLayout(ctx), children: 'Reset layout' }) }),
     Row('Poll interval (ms)', Num('pollMs', 1500, 60000, 500), 'How often to ask the sensor. Pushes from the gateway arrive instantly regardless.'),
     Row('Swimlanes', Toggle('showLanes'), 'History strip under the main view; drag it to replay.'),
     Row('Lane window (minutes)', Num('laneMinutes', 5, 1440, 5)),
@@ -1038,11 +1159,11 @@ export default {
     ctx.addEventListener(window, 'keydown', (e) => {
       const onPage = document.querySelector('.hermes-cockpit'); if (!onPage) return
       const inField = /INPUT|TEXTAREA|SELECT/.test((e.target && e.target.tagName) || '')
-      if (e.key === '/' && !inField) { const s = onPage.querySelector('[data-ck-search]'); if (s) { e.preventDefault(); s.focus() } }
-      if (e.key === 'Escape') { if ($replayT.get() != null) $replayT.set(null); else if ($feedOpen.get() && !$selected.get()) $feedOpen.set(false); else if (!inField) $selected.set(null) }
+      if (e.key === '/' && !inField) { if ($dim.get().short) { e.preventDefault(); $searchOpen.set(true) } else { const s = onPage.querySelector('[data-ck-search]'); if (s) { e.preventDefault(); s.focus() } } }
+      if (e.key === 'Escape') { if ($replayT.get() != null) $replayT.set(null); else if ($queueOpen.get()) $queueOpen.set(false); else if ($lanesOpen.get()) $lanesOpen.set(false); else if ($feedOpen.get() && !$selected.get()) $feedOpen.set(false); else if (!inField) $selected.set(null) }
     })
   }
 }
 
 // Exposed for tests only (not part of the plugin contract).
-export const __test = { chooseLayout, $dim, $feedOpen, orbitLabels, cleanTitle, atom, layout, totalsOf, demoSnap, diffToFeed, fmtAge, fmtTok, $snap, $feed, $history, $mode, $prefs, $selected, $filter, $replayT, STATES }
+export const __test = { LAYOUT_DEFAULTS, SHORT_CHROME, $queueOpen, $lanesOpen, $searchOpen, chooseLayout, $dim, $feedOpen, orbitLabels, cleanTitle, atom, layout, totalsOf, demoSnap, diffToFeed, fmtAge, fmtTok, $snap, $feed, $history, $mode, $prefs, $selected, $filter, $replayT, STATES }

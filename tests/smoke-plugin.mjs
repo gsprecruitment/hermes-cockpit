@@ -25,7 +25,7 @@ window.HTMLCanvasElement.prototype.getContext = function () {
   const noop = () => {}
   return new Proxy({}, { get: (_, k) => { if (k === 'measureText') return (t) => ({ width: String(t).length * 6 }); if (k === 'arc') return () => { calls.arc++ }; if (k === 'fillText') return () => { calls.fillText++ }; return noop }, set: () => true })
 }
-window.HTMLElement.prototype.getBoundingClientRect = function () { return { width: 1000, height: 600, left: 0, top: 0, right: 1000, bottom: 600, x: 0, y: 0 } }
+window.HTMLElement.prototype.getBoundingClientRect = function () { return { width: 1000, height: 800, left: 0, top: 0, right: 1000, bottom: 800, x: 0, y: 0 } }
 window.ResizeObserver = class { observe() {} disconnect() {} }
 if (!window.navigator.clipboard) Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: async () => {} } })
 
@@ -214,7 +214,63 @@ assert(T.$mode.get() === 'live' && T.$snap.get().units.chief, 'sensor reachable 
     }
     await act(async () => { r2.unmount() }); host2.remove()
   }
-  window.HTMLElement.prototype.getBoundingClientRect = realRect; T.$dim.set(T.chooseLayout(1000, 600)); T.$feedOpen.set(false); T.$selected.set(null)
+  window.HTMLElement.prototype.getBoundingClientRect = realRect; T.$dim.set(T.chooseLayout(1000, 800)); T.$feedOpen.set(false); T.$selected.set(null)
+}
+
+// ── 2d. short screens (H < 650): one-row bar and rail, needs-you strip, lanes only as a panel ───
+const keyEsc = async () => { await act(async () => { window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' })) }); await act(async () => { await sleep(20) }) }
+const clickBtn = async (root_, pred) => { const b = Array.from(root_.querySelectorAll('button')).find(pred); assert(b, 'button exists'); await act(async () => { b.click() }); await act(async () => { await sleep(20) }) }
+{
+  const realRect = window.HTMLElement.prototype.getBoundingClientRect
+  for (const [w, h] of [[950, 455], [1236, 590]]) {
+    window.HTMLElement.prototype.getBoundingClientRect = function () { return { width: w, height: h, left: 0, top: 0, right: w, bottom: h, x: 0, y: 0 } }
+    const host2 = window.document.createElement('div'); window.document.body.appendChild(host2); const r2 = ReactDOM.createRoot(host2)
+    T.$selected.set(null); T.$queueOpen.set(false); T.$lanesOpen.set(false)
+    await act(async () => { r2.render(route.render()) }); await act(async () => { await sleep(40) })
+    const page = host2.querySelector('.hermes-cockpit')
+    assert(page.classList.contains('ck-short') && page.querySelector('.ck-strip') && !page.querySelector('.ck-card') && !page.querySelector('.ck-queue') && !page.querySelector('.ck-lanes-box'), `${w}x${h}: short structure: strip instead of cards, lanes not inline`)
+    const C = T.SHORT_CHROME, hdr = C.bar + C.rail + C.strip
+    assert(hdr <= 120 && (h - hdr) / h >= 0.6, `${w}x${h}: header ${hdr}px <= 120, main area gets ${Math.round((h - hdr) / h * 100)}% >= 60%`)
+    assert(!page.querySelector('.ck-bar .ck-gauge') && !page.querySelector('[data-ck-search]') && page.querySelector('.ck-rail button[aria-label="Find unit or task id"]'), `${w}x${h}: bar is text-only KPIs, search is an icon button`)
+    await clickBtn(page, b => b.closest('.ck-strip') && b.parentElement.className === 'names')
+    assert(T.$selected.get() === 'editor' && page.querySelector('.ck-over'), `${w}x${h}: strip name selects the unit and opens the slide-over`)
+    await keyEsc()
+    await clickBtn(page, b => /Open all needs-you cards/.test(b.getAttribute('aria-label') || ''))
+    assert(page.querySelector('.ck-qover .ck-card'), `${w}x${h}: strip expands the card panel over the main area`)
+    await keyEsc(); assert(!page.querySelector('.ck-qover'), `${w}x${h}: Esc closes the card panel`)
+    await clickBtn(page, b => b.textContent === '⋯'); await clickBtn(page, b => b.textContent === 'Show swimlanes')
+    assert(page.querySelector('.ck-lanes-over .ck-lanes-box'), `${w}x${h}: swimlanes open as a bottom panel`)
+    await keyEsc(); assert(!page.querySelector('.ck-lanes-over'), `${w}x${h}: Esc closes the swimlanes panel`)
+    await act(async () => { r2.unmount() }); host2.remove()
+  }
+  window.HTMLElement.prototype.getBoundingClientRect = realRect; T.$dim.set(T.chooseLayout(1000, 800)); T.$selected.set(null)
+}
+
+// ── 2e. layout switches, resize handles, text size, reset ───────────────────────────────────────
+{
+  const page = rootEl.querySelector('.hermes-cockpit')
+  assert(page.querySelector('.ck-rail'), 'rail shown by default')
+  await clickBtn(page, b => b.getAttribute('aria-label') === 'Layout')
+  const box = Array.from(page.querySelectorAll('.ck-lay label')).find(l => /Department rail/.test(l.textContent))
+  await act(async () => { box.querySelector('input').click() }); await act(async () => { await sleep(20) })
+  assert(!page.querySelector('.ck-rail') && storage.get('prefs').showRail === false, 'toggling the rail removes it from the DOM and persists in ctx.storage')
+  const lg = Array.from(page.querySelectorAll('.ck-lay button')).find(b => b.textContent === 'large'); await act(async () => { lg.click() })
+  assert(page.style.getPropertyValue('--ck-z') === '1.15' && storage.get('prefs').textSize === 'large', 'text size large sets --ck-z and persists')
+  await act(async () => { T.$selected.set('chief') }); await act(async () => { await sleep(40) })
+  const h = page.querySelector('.ck-over .ck-handle.v'); assert(h, 'drawer has a resize handle')
+  const ptr = (type, x) => new window.MouseEvent(type, { bubbles: true, clientX: x })
+  await act(async () => { h.dispatchEvent(ptr('pointerdown', 600)); h.dispatchEvent(ptr('pointermove', 540)); h.dispatchEvent(ptr('pointerup', 540)) }); await act(async () => { await sleep(20) })
+  assert(T.$prefs.get().drawerW === 440 && storage.get('prefs').drawerW === 440 && /440px/.test(page.querySelector('.ck-over').style.width), 'dragging the drawer handle left by 60px widens 380 -> 440 and stores it')
+  await act(async () => { page.querySelector('.ck-over .ck-handle.v').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })) }); await act(async () => { await sleep(20) })
+  assert(T.$prefs.get().drawerW === 456, 'arrow keys resize by 16px')
+  await act(async () => { page.querySelector('.ck-over .ck-handle.v').dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true })) }); await act(async () => { await sleep(20) })
+  assert(T.$prefs.get().drawerW === null, 'double-click resets the width')
+  await act(async () => { h.dispatchEvent(ptr('pointerdown', 600)); h.dispatchEvent(ptr('pointerup', 600 - 80)) }); await act(async () => { await sleep(20) })
+  assert(T.$prefs.get().drawerW === 460, 'second drag stores 460')
+  await clickBtn(page, b => b.textContent === 'Reset layout')
+  const pr = T.$prefs.get(); const sp = storage.get('prefs')
+  assert(pr.showRail === null && pr.drawerW === null && pr.textSize === 'normal' && page.querySelector('.ck-rail') && sp.drawerW === null && sp.textSize === 'normal', 'Reset layout restores defaults (state, DOM and storage)')
+  await act(async () => { T.$selected.set(null) })
 }
 
 // ── 3. rpc door ─────────────────────────────────────────────────────────────────────────
