@@ -81,14 +81,32 @@ function assert(c, m) { if (!c) { console.error('FAIL', m); process.exitCode = 1
 
 // ── 1. pure helpers ─────────────────────────────────────────────────────────────────────
 assert(plugin.id === 'hermes-cockpit' && plugin.defaultEnabled === false, 'plugin id + defaultEnabled:false')
-const L = T.layout(LIVE, 1000, 600, true)
-assert(L.pos.default && Math.abs(L.pos.default.x - 500) < 1 && L.arcs.length === LIVE.groups.filter(g => g.profiles.some(x => x !== LIVE.owner)).length, 'layout: owner centred, one arc per group with non-owner members')
-assert(L.pos.editor.r < L.pos.chief.r && L.pos.editor.r < L.pos.default.r + L.inner + 1, 'layout: blocked unit pulled to the inner ring')
+const L = T.layout(LIVE, 1000, 360, true)
+assert(L.pos.default && Math.abs(L.pos.default.x - 500) < 1 && Math.abs(L.pos.default.y - 180) < 1, 'layout: operator seat centred')
+assert(L.clusters.length === 3 && L.clusters.every(c => c.members.length === c.n), 'layout: one cluster per department with non-owner members')
+assert(Object.values(L.pos).every(p => p.x >= 0 && p.x <= 1000 && p.y >= 0 && p.y <= 360), 'layout: every dot inside a 1000x360 canvas')
+const big = T.demoSnap(null); const LB = T.layout(big, 1020, 360, true)
+const pts = Object.values(LB.pos).map(p => `${Math.round(p.x)},${Math.round(p.y)}`)
+assert(pts.length >= 46 && new Set(pts).size === pts.length && Object.values(LB.pos).every(p => p.x >= 0 && p.x <= 1020 && p.y >= 0 && p.y <= 360), 'layout: 47-unit demo fleet fits 1020x360 without stacked dots')
+{ // label boxes never intersect: 9 departments (1,5,7,6,3,3,21,4,2 units), two canvas sizes
+  const sizes = [1, 5, 7, 6, 3, 3, 21, 4, 2]; const units = {}; const groups = []
+  const states = ['blocked', 'failed', 'task', 'working', 'idle', 'off']
+  sizes.forEach((n, gi) => { const profiles = []; for (let i = 0; i < n; i++) { const p = `g${gi}u${i}`; profiles.push(p); units[p] = { profile: p, group: 'g' + gi, state: states[(gi + i) % 6], since: 0, display_name: 'Unit number ' + gi + '-' + i, blocked: [], failed: [], task: null } } groups.push({ id: 'g' + gi, label: ['Other', 'Leadership', 'Recruiting', 'Clients & Commercial', 'Content & Marketing', 'Backoffice', 'Engineering', 'Review', 'Operations'][gi], profiles }) })
+  const snapB = { owner: 'default', groups, units: { ...units, default: { profile: 'default', group: 'x', state: 'idle', since: 0 } }, ts: 1 }
+  for (const [w, h] of [[1020, 360], [940, 420]]) {
+    const Lx = T.layout(snapB, w, h, true); const LBx = T.orbitLabels(snapB, Lx, w, h, (t) => t.length * 6.5, { sel: 'g6u3' })
+    const bx = LBx.clusters.map(c => c.box).concat(LBx.units.map(u => u.box)); let bad = 0
+    for (let i = 0; i < bx.length; i++) for (let j = i + 1; j < bx.length; j++) { const a = bx[i], b = bx[j]; if (a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y) bad++ }
+    assert(LBx.clusters.length === 9 && bad === 0, `orbit labels: no overlapping label boxes at ${w}x${h} (${bx.length} boxes)`)
+  }
+}
+assert(T.cleanTitle('119\tPipeline\n  review') === '119 Pipeline review' && T.cleanTitle('119\\tPipeline\\n\\nx') === '119 Pipeline x', 'cleanTitle strips real and literal \\t \\n runs')
 const d1 = T.demoSnap(null); const d2 = T.demoSnap(d1)
 assert(Object.keys(d2.units).length === 47 && d2.rev === 2 && d2.totals.units === 47, 'demo fleet evolves deterministically')
 assert(T.fmtTok(1234567) === '1.2M' && T.fmtAge(3700) === '1.0h', 'formatters')
 
 // ── 2. register + mount ─────────────────────────────────────────────────────────────────
+storage.set('prefs', { showLanes: true }) // an explicit stored pref wins over the short-window default
 plugin.register(ctx)
 assert(contribs.find(c => c.area === 'routes' && c.data.path === '/cockpit'), 'route contributed')
 assert(contribs.filter(c => c.area === 'palette').length === 3 && contribs.filter(c => c.area === 'keybinds').length === 3 && contribs.find(c => c.area === 'sb.r'), 'palette ×3, keybinds ×3, statusbar chip')
@@ -104,7 +122,7 @@ await act(async () => { rootR.render(route.render()) }); await act(async () => {
 const text = rootEl.textContent
 assert(/needs you/.test(text) && /working/.test(text) && /tokens/.test(text), 'mission bar renders KPIs')
 assert(T.$prefs.get().view === 'grid' && T.$prefs.get().theme === 'gsp', 'defaults: grid view, gsp theme')
-assert(rootEl.querySelectorAll('canvas').length === 1 && rootEl.querySelector('[data-ck-theme=gsp]'), 'grid is the default view: only the swimlanes canvas, gsp theme attribute')
+assert(rootEl.querySelectorAll('canvas').length === 1 && rootEl.querySelector('[data-ck-theme=gsp]') && rootEl.querySelector('.ck-main').parentElement.className.includes('ck-body') && /min-height:360px/.test(window.document.querySelector('style').textContent.replace(/\s/g, '')), 'grid is the default view: only the swimlanes canvas, gsp theme attribute')
 assert(/Leadership/.test(text) && /board:/.test(text), 'group rail + pipeline strip')
 const tiles = rootEl.querySelectorAll('.ck-tile')
 assert(tiles.length === Object.keys(LIVE.units).length && rootEl.querySelectorAll('.ck-col').length === 3, 'unit grid: one tile per unit, one column per group')
@@ -121,9 +139,9 @@ assert(T.$selected.get() === 'editor' && window.document.activeElement && /task 
 await act(async () => { T.$selected.set(null) })
 // constellation stays reachable through the view pref
 await act(async () => { T.$prefs.set({ ...T.$prefs.get(), view: 'constellation' }) }); await act(async () => { await sleep(40) })
-assert(rootEl.querySelectorAll('canvas').length === 2, 'constellation view: constellation + swimlanes canvases mounted')
+assert(rootEl.querySelectorAll('canvas').length === 2, 'orbit view: orbit + swimlanes canvases mounted')
 await act(async () => { await sleep(80) })
-assert(calls.arc > 20 && calls.fillText > 5, `draw loop ran (arc=${calls.arc}, text=${calls.fillText})`)
+assert(calls.arc > 2 && calls.fillText > 2, `draw loop ran (arc=${calls.arc}, text=${calls.fillText})`)
 
 // click a node: force the smoothed position by selecting programmatically then verifying the drawer
 await act(async () => { T.$selected.set('chief') }); await act(async () => { await sleep(60) })

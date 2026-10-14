@@ -39,7 +39,7 @@ function useAtom(a) {
 const DEFAULT_PREFS = {
   pollMs: 4000, showLanes: true, laneMinutes: 60, density: 'comfortable', particles: true,
   reducedMotion: false, demo: false, showIdle: true, laneBy: 'group', focusOnNeedsYou: true,
-  theme: 'gsp', view: 'grid'   // theme: 'gsp' house style | 'app' host variables; view: 'grid' | 'constellation'
+  theme: 'gsp', view: 'grid', queueCollapsed: false   // theme: 'gsp' house style | 'app' host variables; view: 'grid' | 'constellation'
 }
 const $prefs = atom(DEFAULT_PREFS)
 const $snap = atom(null)       // fleet snapshot (sensor shape, also produced by rpc/demo adapters)
@@ -281,36 +281,107 @@ const actions = {
   copy(text) { try { navigator.clipboard.writeText(text); notice('copied') } catch (e) { notice('clipboard unavailable', 'error') } }
 }
 
-// ── constellation canvas ────────────────────────────────────────────────────────────────
+// ── department orbit (canvas): seat in the centre, one cluster per department on an ellipse ──────────
+// Cluster angle share ~ sqrt(unit count) so a 21-unit department does not crowd the rest; units are dots
+// packed on a hex grid (most urgent in the middle), shaped per state so nothing relies on colour alone.
+function hexCells(n) { // first n axial cells ordered by distance from the middle
+  let k = 0; while (3 * k * (k + 1) + 1 < n) k++
+  const cells = []
+  for (let q = -k; q <= k; q++) for (let r = -k; r <= k; r++) if (Math.abs(q + r) <= k) { const x = q + r / 2, y = r * 0.866; cells.push({ x, y, d: Math.hypot(x, y), a: Math.atan2(y, x) }) }
+  cells.sort((a, b) => (a.d - b.d) || (a.a - b.a))
+  return { cells: cells.slice(0, n), k }
+}
 function layout(snap, w, h, showIdle) {
-  // Owner at the centre, one arc per group, units along the arc; blocked units pull inward.
-  const cx = w / 2, cy = h / 2, R = Math.min(w, h) * 0.40, inner = Math.min(w, h) * 0.17
-  const pos = {}
-  const groups = (snap.groups || []).filter(g => g.profiles.some(p => p !== snap.owner))
-  const total = groups.reduce((a, g) => a + Math.max(1, g.profiles.filter(p => p !== snap.owner && (showIdle || (snap.units[p] && snap.units[p].state !== 'idle' && snap.units[p].state !== 'off'))).length), 0) || 1
+  const cx = w / 2, cy = h / 2, pos = {}
+  const sp = Math.max(9, Math.min(15, Math.min(w, h) / 24)) // dot spacing
+  const groups = (snap.groups || []).map(g => {
+    const members = g.profiles.filter(p => p !== snap.owner && snap.units[p] && (showIdle || (snap.units[p].state !== 'idle' && snap.units[p].state !== 'off'))).map(p => snap.units[p]).sort(byPriority)
+    return { g, members }
+  }).filter(x => x.members.length)
+  const weight = (n) => Math.max(1.8, Math.sqrt(n)) // floor: tiny clusters keep a gap
+  const total = groups.reduce((a, x) => a + weight(x.members.length), 0) || 1
+  const maxK = Math.max(1, ...groups.map(x => hexCells(x.members.length).k))
+  const Rx = Math.max(60, w / 2 - (maxK + 1.2) * sp - 60), Ry = Math.max(40, h / 2 - (maxK + 1) * sp - 22)
   let a0 = -Math.PI / 2
-  const arcs = []
-  groups.forEach(g => {
-    const members = g.profiles.filter(p => p !== snap.owner && snap.units[p] && (showIdle || (snap.units[p].state !== 'idle' && snap.units[p].state !== 'off')))
-    const span = (Math.max(1, members.length) / total) * Math.PI * 2
-    arcs.push({ id: g.id, label: g.label, a0, a1: a0 + span, n: members.length })
-    members.forEach((p, i) => {
-      const u = snap.units[p]
-      const a = a0 + span * ((i + 0.5) / Math.max(1, members.length))
-      const r = u.state === 'blocked' ? inner : (u.state === 'failed' ? inner * 1.45 : (u.state === 'task' || u.state === 'working' ? R * 0.82 : R))
-      pos[p] = { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r, a, r }
-    })
-    a0 += span
+  const clusters = groups.map(({ g, members }) => {
+    const span = (weight(members.length) / total) * Math.PI * 2; const a = a0 + span / 2; a0 += span
+    const { cells, k } = hexCells(members.length)
+    const ccx = cx + Math.cos(a) * Rx, ccy = cy + Math.sin(a) * Ry, radius = (k + 0.7) * sp
+    members.forEach((u, i) => { pos[u.profile] = { x: ccx + cells[i].x * sp, y: ccy + cells[i].y * sp } })
+    return { id: g.id, label: g.label, cx: ccx, cy: ccy, a, radius, n: members.length, active: members.filter(u => u.state === 'working' || u.state === 'task').length, hot: members.some(u => u.state === 'blocked') ? 'blocked' : (members.some(u => u.state === 'failed') ? 'failed' : null), members }
   })
-  pos[snap.owner] = { x: cx, y: cy, a: 0, r: 0 }
-  return { pos, arcs, cx, cy, R, inner }
+  if (snap.owner && snap.units[snap.owner]) pos[snap.owner] = { x: cx, y: cy }
+  return { pos, clusters, cx, cy, Rx, Ry, sp }
+}
+
+// Label placement, pure so it can be tested: cluster labels first (outer side, above, below, left, right, then nudged
+// outward along the ray until free), then up to 2 urgent unit labels per cluster (+ the selected one) outside the
+// cluster's dot area with a leader line. Returns every box so callers can check there is no overlap.
+function orbitLabels(view, L, w, h, measure, opt) {
+  opt = opt || {}
+  const hit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+  const inside = (b) => b.x >= 2 && b.y >= 2 && b.x + b.w <= w - 2 && b.y + b.h <= h - 2
+  const dotBoxes = L.clusters.map(cl => ({ x: cl.cx - cl.radius, y: cl.cy - cl.radius * 0.9, w: cl.radius * 2, h: cl.radius * 1.8 }))
+  const boxes = [{ x: L.cx - 16, y: L.cy + 14, w: 32, h: 14 }]
+  const free = (b, skipDots) => inside(b) && !boxes.some(o => hit(b, o)) && !dotBoxes.some((o, i) => i !== skipDots && hit(b, o))
+  const clusters = L.clusters.map((cl, i) => {
+    const text = `${cl.label}  ${cl.n} · ${cl.active} active`; const tw = measure(text, true)
+    const dx = Math.cos(cl.a), dy = Math.sin(cl.a), R = cl.radius
+    const cand = [
+      dx > 0 ? { x: cl.cx + R + 8, y: cl.cy - 7 } : { x: cl.cx - R - 8 - tw, y: cl.cy - 7 },
+      { x: cl.cx - tw / 2, y: cl.cy - R - 17 }, { x: cl.cx - tw / 2, y: cl.cy + R + 4 },
+      { x: cl.cx - R - 8 - tw, y: cl.cy - 7 }, { x: cl.cx + R + 8, y: cl.cy - 7 }
+    ].map(c => ({ x: c.x, y: c.y, w: tw, h: 14 }))
+    let box = cand.find(b => free(b, i))
+    for (let k = 1; !box && k <= 30; k++) { // nudge outward along the ray
+      const d = R + 8 + k * 8; const ax = cl.cx + dx * d, ay = cl.cy + dy * d
+      const b = { x: dx > 0.3 ? ax : (dx < -0.3 ? ax - tw : ax - tw / 2), y: ay - 7 + (Math.abs(dx) <= 0.3 ? (dy > 0 ? 8 : -8) : 0), w: tw, h: 14 }
+      if (free(b, i)) box = b
+    }
+    if (!box) box = { ...cand[0], x: Math.max(2, Math.min(w - tw - 2, cand[0].x)), y: Math.max(2, Math.min(h - 16, cand[0].y)) }
+    boxes.push(box)
+    return { id: cl.id, text, box }
+  })
+  const units = []
+  L.clusters.forEach((cl, i) => {
+    let n = 0
+    cl.members.forEach(u => {
+      const urgent = u.state === 'blocked' || u.state === 'failed' || u.state === 'task' || u.state === 'working'
+      const isSel = opt.sel === u.profile
+      if (!isSel && !(urgent && n < 2 && (!opt.matches || opt.matches(u)))) return
+      const p = L.pos[u.profile]; if (!p) return
+      const name = unitName(u); const tw = measure(name, false)
+      let vx = p.x - cl.cx, vy = p.y - cl.cy; let vl = Math.hypot(vx, vy)
+      if (vl < 1) { vx = Math.cos(cl.a); vy = Math.sin(cl.a); vl = 1 }
+      const dirs = [[vx / vl, vy / vl], [Math.cos(cl.a), Math.sin(cl.a)], [0, -1], [0, 1], [-1, 0], [1, 0]]
+      let box = null, from = null
+      for (const [ux, uy] of dirs) { for (let k = 0; k < 14 && !box; k++) {
+        const d = cl.radius + 6 + k * 8; const ax = cl.cx + ux * d, ay = cl.cy + uy * d
+        const b = { x: ux >= 0.3 ? ax : (ux <= -0.3 ? ax - tw : ax - tw / 2), y: ay - 7, w: tw, h: 14 }
+        if (free(b, i) && !hit(b, dotBoxes[i])) { box = b; from = { x: ax, y: ay } }
+      } if (box) break }
+      if (!box && isSel) { box = { x: Math.max(2, Math.min(w - tw - 2, p.x + 8)), y: Math.max(2, Math.min(h - 16, p.y - 7)), w: tw, h: 14 }; from = { x: p.x, y: p.y } }
+      if (!box) return
+      boxes.push(box); if (urgent) n++
+      units.push({ p: u.profile, text: name, box, from, dot: p, sel: isSel })
+    })
+  })
+  return { clusters, units, boxes }
+}
+function drawDot(c, shape, x, y, r, col) {
+  c.fillStyle = col; c.strokeStyle = col; c.lineWidth = 1.6
+  if (shape === 'blocked') { c.beginPath(); c.moveTo(x, y - r - 1); c.lineTo(x + r + 1, y); c.lineTo(x, y + r + 1); c.lineTo(x - r - 1, y); c.closePath(); c.fill() }
+  else if (shape === 'failed') { c.beginPath(); c.moveTo(x - r, y - r); c.lineTo(x + r, y + r); c.moveTo(x + r, y - r); c.lineTo(x - r, y + r); c.stroke() }
+  else if (shape === 'task') { c.beginPath(); c.moveTo(x - r * 0.8, y - r); c.lineTo(x + r, y); c.lineTo(x - r * 0.8, y + r); c.closePath(); c.fill() }
+  else if (shape === 'working') { c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill() }
+  else if (shape === 'idle') { c.beginPath(); c.arc(x, y, r - 0.5, 0, Math.PI * 2); c.stroke() }
+  else { c.beginPath(); c.moveTo(x - r, y); c.lineTo(x + r, y); c.stroke() }
 }
 
 function Constellation({ ctx, onPick }) {
   const ref = useRef(null); const wrap = useRef(null)
-  const snap = useAtom($snap); const prefs = useAtom($prefs); const selected = useAtom($selected); const filter = useAtom($filter); const replayT = useAtom($replayT)
-  const hist = useAtom($history)
-  const anim = useRef({ particles: [], smooth: {}, hover: null, t: 0 })
+  const selected = useAtom($selected)
+  const anim = useRef({ t: 0, hover: null, hits: [], labels: [] })
   // Resize: set width/height ATTRIBUTES from the container (hard rule 5).
   useEffect(() => {
     const el = wrap.current, c = ref.current; if (!el || !c) return
@@ -319,7 +390,6 @@ function Constellation({ ctx, onPick }) {
     if (typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(fit); ro.observe(el); return () => ro.disconnect()
   }, [])
-  // Draw loop
   useEffect(() => {
     const c = ref.current; if (!c) return
     let raf = 0, last = performance.now(), alive = true
@@ -327,93 +397,77 @@ function Constellation({ ctx, onPick }) {
       if (!alive) return
       const dt = Math.min(0.1, (now - last) / 1000); last = now
       const A = anim.current; A.t += dt
-      const ctx2 = c.getContext('2d'); if (!ctx2) return
+      const g2 = c.getContext('2d'); if (!g2) return
       const dpr = Math.min(2, window.devicePixelRatio || 1); const w = c.width / dpr, h = c.height / dpr
-      ctx2.setTransform(dpr, 0, 0, dpr, 0, 0); ctx2.clearRect(0, 0, w, h)
+      g2.setTransform(dpr, 0, 0, dpr, 0, 0); g2.clearRect(0, 0, w, h)
       const s = $snap.get(); if (!s) { raf = requestAnimationFrame(draw); return }
       // Replay: substitute historical states when scrubbing.
       const rt = $replayT.get(); let view = s
       if (rt != null) { const pt = nearest($history.get(), rt); if (pt) { view = { ...s, units: {} }; Object.values(s.units).forEach(u => { view.units[u.profile] = { ...u, state: pt.states[u.profile] || 'off', tokens_per_min: (pt.tpm || {})[u.profile] || 0 } }) } }
-      const P = palette(c); const pf = $prefs.get(); const f = $filter.get()
+      const P = palette(c); const pf = $prefs.get(); const f = $filter.get(); const sel = $selected.get()
       const L = layout(view, w, h, pf.showIdle)
       const motion = pf.reducedMotion ? 0 : 1
-      // group arcs + labels
-      ctx2.lineWidth = 1; ctx2.strokeStyle = P.border; ctx2.font = `11px ${P.sans}`; ctx2.fillStyle = P.muted
-      L.arcs.forEach(g => {
-        ctx2.beginPath(); ctx2.arc(L.cx, L.cy, L.R + 26, g.a0 + 0.03, g.a1 - 0.03); ctx2.stroke()
-        const am = (g.a0 + g.a1) / 2; const lx = L.cx + Math.cos(am) * (L.R + 44), ly = L.cy + Math.sin(am) * (L.R + 44)
-        ctx2.textAlign = Math.cos(am) > 0.3 ? 'left' : (Math.cos(am) < -0.3 ? 'right' : 'center'); ctx2.globalAlpha = f.group && f.group !== g.id ? 0.35 : 1
-        ctx2.fillText(`${g.label.toUpperCase()}  ${g.n}`, lx, ly + 4); ctx2.globalAlpha = 1
+      const q = f.q
+      const matches = (u) => unitMatches(u, q) && f.states.has(u.state) && (!f.group || f.group === u.group || u.profile === view.owner)
+      A.hits = []; A.labels = []
+      // seat → hot clusters
+      g2.lineWidth = 1
+      L.clusters.forEach(cl => { if (!cl.hot) return; g2.strokeStyle = P[cl.hot]; g2.globalAlpha = 0.45; g2.beginPath(); g2.moveTo(L.cx, L.cy); g2.lineTo(cl.cx, cl.cy); g2.stroke(); g2.globalAlpha = 1 })
+      // seat
+      const seatU = view.units[view.owner]
+      g2.fillStyle = P.muted; g2.font = `10px ${P.sans}`; g2.textAlign = 'center'
+      g2.strokeStyle = P.muted; g2.beginPath(); g2.arc(L.cx, L.cy, 11, 0, Math.PI * 2); g2.stroke()
+      if (seatU) { drawDot(g2, seatU.state, L.cx, L.cy, 5, P[seatU.state] || P.idle); A.hits.push({ p: view.owner, x: L.cx, y: L.cy }) }
+      g2.fillText('you', L.cx, L.cy + 24)
+      const LB = orbitLabels(view, L, w, h, (t, bold) => { g2.font = bold ? `600 11px ${P.sans}` : `11px ${P.sans}`; return g2.measureText(t).width }, { sel, matches })
+      LB.clusters.forEach(cl => {
+        g2.font = `600 11px ${P.sans}`; g2.globalAlpha = f.group && f.group !== cl.id ? 0.4 : 1; g2.fillStyle = f.group === cl.id ? P.accent : P.text; g2.textAlign = 'left'
+        g2.fillText(cl.text, cl.box.x, cl.box.y + 11); g2.globalAlpha = 1; A.labels.push({ id: cl.id, ...cl.box })
       })
-      // inner ring = "needs you"
-      ctx2.setLineDash([3, 5]); ctx2.strokeStyle = P.blocked; ctx2.globalAlpha = 0.35; ctx2.beginPath(); ctx2.arc(L.cx, L.cy, L.inner, 0, Math.PI * 2); ctx2.stroke(); ctx2.setLineDash([]); ctx2.globalAlpha = 1
-      // smooth positions
-      Object.keys(L.pos).forEach(p => { const tgt = L.pos[p]; const sm = A.smooth[p] || (A.smooth[p] = { x: tgt.x, y: tgt.y }); const k = motion ? Math.min(1, dt * 4) : 1; sm.x += (tgt.x - sm.x) * k; sm.y += (tgt.y - sm.y) * k })
-      // edges (delegation) + particles
-      const units = Object.values(view.units)
-      units.forEach(u => {
-        const from = u.delegated_by || (u.delegations > 0 && u.profile !== view.owner ? null : null)
-        if (!from || !A.smooth[from] || !A.smooth[u.profile]) return
-        const a = A.smooth[from], b = A.smooth[u.profile]
-        ctx2.strokeStyle = P.accent; ctx2.globalAlpha = 0.35; ctx2.lineWidth = 1.2; ctx2.beginPath(); ctx2.moveTo(a.x, a.y); ctx2.lineTo(b.x, b.y); ctx2.stroke(); ctx2.globalAlpha = 1
-        if (pf.particles && motion && Math.random() < dt * 3) A.particles.push({ from, to: u.profile, t: 0 })
+      // dots
+      L.clusters.forEach(cl => {
+        cl.members.forEach(u => {
+          const p = L.pos[u.profile]; if (!p) return
+          const m = matches(u); const r = pf.density === 'compact' ? 3.6 : 4.4
+          g2.globalAlpha = m ? 1 : 0.18
+          if (u.state === 'blocked') { const fl = 0.5 + 0.5 * Math.sin(A.t * 5 * motion); g2.fillStyle = P.blocked; g2.globalAlpha = (m ? 1 : 0.18) * (0.15 + fl * 0.25); g2.beginPath(); g2.arc(p.x, p.y, r + 4 + fl * 2, 0, Math.PI * 2); g2.fill(); g2.globalAlpha = m ? 1 : 0.18 }
+          drawDot(g2, u.state, p.x, p.y, r, P[u.state] || P.idle)
+          if ((u.anomalies || []).length) { g2.fillStyle = P.accent; g2.beginPath(); g2.arc(p.x + r + 1, p.y - r - 1, 1.8, 0, Math.PI * 2); g2.fill() }
+          if (sel === u.profile) { g2.strokeStyle = P.accent; g2.lineWidth = 1.2; g2.beginPath(); g2.arc(p.x, p.y, r + 4, 0, Math.PI * 2); g2.stroke() }
+          A.hits.push({ p: u.profile, x: p.x, y: p.y })
+          g2.globalAlpha = 1
+        })
       })
-      A.particles = A.particles.filter(pt => { pt.t += dt * 0.9; const a = A.smooth[pt.from], b = A.smooth[pt.to]; if (!a || !b || pt.t > 1) return false; const x = a.x + (b.x - a.x) * pt.t, y = a.y + (b.y - a.y) * pt.t; ctx2.fillStyle = P.accent; ctx2.globalAlpha = 0.9 * (1 - Math.abs(pt.t - 0.5) * 0.6); ctx2.beginPath(); ctx2.arc(x, y, 2.2, 0, Math.PI * 2); ctx2.fill(); ctx2.globalAlpha = 1; return true })
-      // orbiting moons = subagents / delegations
-      units.forEach(u => {
-        const sm = A.smooth[u.profile]; if (!sm || !u.delegations) return
-        for (let i = 0; i < Math.min(5, u.delegations); i++) { const ang = A.t * 1.4 * motion + i * (Math.PI * 2 / Math.min(5, u.delegations)); ctx2.fillStyle = P.accent; ctx2.globalAlpha = 0.8; ctx2.beginPath(); ctx2.arc(sm.x + Math.cos(ang) * 17, sm.y + Math.sin(ang) * 17, 2, 0, Math.PI * 2); ctx2.fill(); ctx2.globalAlpha = 1 }
-      })
-      // nodes
-      const q = f.q.toLowerCase()
-      units.forEach(u => {
-        const sm = A.smooth[u.profile]; if (!sm) return
-        const match = (!q || u.profile.includes(q) || (u.display_name || '').toLowerCase().includes(q)) && f.states.has(u.state) && (!f.group || f.group === u.group || u.profile === view.owner)
-        const col = P[u.state] || P.idle
-        const rate = Math.min(1, (u.tokens_per_min || 0) / 4000)
-        const base = u.profile === view.owner ? 16 : (pf.density === 'compact' ? 7 : 9)
-        const breathe = (u.state === 'working' || u.state === 'task') ? 1 + Math.sin(A.t * (2 + rate * 4) * motion) * (0.08 + rate * 0.18) : 1
-        const r = base * breathe
-        ctx2.globalAlpha = match ? 1 : 0.18
-        if (u.state === 'blocked') { const flash = 0.5 + 0.5 * Math.sin(A.t * 5 * motion); ctx2.fillStyle = col; ctx2.globalAlpha *= 0.25 + flash * 0.3; ctx2.beginPath(); ctx2.arc(sm.x, sm.y, r + 8 + flash * 5, 0, Math.PI * 2); ctx2.fill(); ctx2.globalAlpha = match ? 1 : 0.18 }
-        if (u.state === 'working' || u.state === 'task') { ctx2.fillStyle = col; ctx2.globalAlpha *= 0.18; ctx2.beginPath(); ctx2.arc(sm.x, sm.y, r + 5 + rate * 8, 0, Math.PI * 2); ctx2.fill(); ctx2.globalAlpha = match ? 1 : 0.18 }
-        ctx2.fillStyle = col; ctx2.beginPath(); ctx2.arc(sm.x, sm.y, r, 0, Math.PI * 2); ctx2.fill()
-        if (u.state === 'off') { ctx2.strokeStyle = P.muted; ctx2.lineWidth = 1; ctx2.stroke() }
-        if (u.profile === view.owner) { ctx2.strokeStyle = P.text; ctx2.lineWidth = 1.5; ctx2.beginPath(); ctx2.arc(sm.x, sm.y, r + 4, 0, Math.PI * 2); ctx2.stroke() }
-        if ((u.anomalies || []).length) { ctx2.fillStyle = P.failed; ctx2.beginPath(); ctx2.arc(sm.x + r * 0.8, sm.y - r * 0.8, 3.2, 0, Math.PI * 2); ctx2.fill() }
-        if (selected === u.profile || A.hover === u.profile) { ctx2.strokeStyle = P.text; ctx2.lineWidth = 1; ctx2.setLineDash([2, 3]); ctx2.beginPath(); ctx2.arc(sm.x, sm.y, r + 9, 0, Math.PI * 2); ctx2.stroke(); ctx2.setLineDash([]) }
-        // label
-        ctx2.fillStyle = P.text; ctx2.font = `${u.profile === view.owner ? 12 : 11}px ${P.sans}`; ctx2.textAlign = 'center'
-        const label = u.profile === view.owner ? (u.display_name || u.profile) : u.profile
-        if (pf.density !== 'compact' || u.state !== 'idle' || selected === u.profile) ctx2.fillText(label, sm.x, sm.y + r + 13)
-        if ((u.state === 'working' || u.state === 'task') && u.tokens_per_min) { ctx2.fillStyle = P.muted; ctx2.font = `10px ${P.mono}`; ctx2.fillText(`${fmtTok(u.tokens_per_min)}/min`, sm.x, sm.y + r + 25) }
-        ctx2.globalAlpha = 1
+      LB.units.forEach(l => {
+        g2.strokeStyle = P.muted; g2.globalAlpha = 0.5; g2.lineWidth = 1; g2.beginPath(); g2.moveTo(l.dot.x, l.dot.y); g2.lineTo(l.from.x, l.from.y); g2.stroke(); g2.globalAlpha = 1
+        g2.font = `11px ${P.sans}`; g2.fillStyle = l.sel ? P.accent : P.text; g2.textAlign = 'left'; g2.fillText(l.text, l.box.x, l.box.y + 11)
       })
       // hover tooltip
-      if (A.hover && view.units[A.hover] && A.smooth[A.hover]) {
-        const u = view.units[A.hover], sm = A.smooth[A.hover]
-        const lines = [`${u.profile} · ${STATE_LABEL[u.state]}${u.since ? ' · ' + fmtAge(view.ts - u.since) : ''}`, u.task ? `task: ${u.task.title}` : (u.latest_session && u.latest_session.title ? `last: ${u.latest_session.title}` : ''), u.model ? `model: ${u.model}` : '', u.cost_today_usd ? `today: ${fmtTok(u.tokens_today)} tok · ${fmtUsd(u.cost_today_usd)}` : ''].filter(Boolean)
-        ctx2.font = `11px ${P.sans}`; const tw = Math.max(...lines.map(l => ctx2.measureText(l).width)) + 16; const th = lines.length * 15 + 10
-        const tx = Math.min(w - tw - 4, Math.max(4, sm.x + 14)), ty = Math.max(4, sm.y - th - 8)
-        ctx2.fillStyle = P.tip; ctx2.fillRect(tx, ty, tw, th); ctx2.strokeStyle = P.muted; ctx2.strokeRect(tx + 0.5, ty + 0.5, tw - 1, th - 1)
-        ctx2.fillStyle = P.text; ctx2.textAlign = 'left'; lines.forEach((l, i) => ctx2.fillText(l, tx + 8, ty + 16 + i * 15))
+      const hv = A.hover && view.units[A.hover], hp = hv && (L.pos[A.hover])
+      if (hv && hp) {
+        const lines = [`${unitName(hv)} · ${STATE_LABEL[hv.state]}${hv.since ? ' · ' + fmtAge(view.ts - hv.since) : ''}`, unitTask(hv) ? `task: ${unitTask(hv).title}` : (hv.latest_session && hv.latest_session.title ? `last: ${hv.latest_session.title}` : ''), hv.model ? `model: ${hv.model}` : '', hv.cost_today_usd ? `today: ${fmtTok(hv.tokens_today)} tok · ${fmtUsd(hv.cost_today_usd)}` : ''].filter(Boolean)
+        g2.font = `11px ${P.sans}`; const tw = Math.max(...lines.map(l => g2.measureText(l).width)) + 16; const th = lines.length * 15 + 10
+        const tx = Math.min(w - tw - 4, Math.max(4, hp.x + 12)), ty = Math.max(4, Math.min(h - th - 4, hp.y - th - 8))
+        g2.fillStyle = P.tip; g2.fillRect(tx, ty, tw, th); g2.strokeStyle = P.muted; g2.lineWidth = 1; g2.strokeRect(tx + 0.5, ty + 0.5, tw - 1, th - 1)
+        g2.fillStyle = P.text; g2.textAlign = 'left'; lines.forEach((l, i) => g2.fillText(l, tx + 8, ty + 16 + i * 15))
       }
       raf = requestAnimationFrame(draw)
     }
     raf = requestAnimationFrame(draw)
     return () => { alive = false; cancelAnimationFrame(raf) }
   }, [selected])
-  const hit = (ev) => {
-    const c = ref.current; if (!c) return null; const r = c.getBoundingClientRect(); const x = ev.clientX - r.left, y = ev.clientY - r.top
-    const A = anim.current; let best = null, bd = 18 * 18
-    Object.keys(A.smooth).forEach(p => { const sm = A.smooth[p]; const d = (sm.x - x) ** 2 + (sm.y - y) ** 2; if (d < bd) { bd = d; best = p } })
-    return best
+  const at = (ev) => {
+    const c = ref.current; if (!c) return {}; const r = c.getBoundingClientRect(); const x = ev.clientX - r.left, y = ev.clientY - r.top
+    const A = anim.current; let best = null, bd = 10 * 10
+    A.hits.forEach(hh => { const d = (hh.x - x) ** 2 + (hh.y - y) ** 2; if (d < bd) { bd = d; best = hh.p } })
+    const lab = best ? null : A.labels.find(l => x >= l.x - 2 && x <= l.x + l.w + 2 && y >= l.y - 2 && y <= l.y + l.h + 2)
+    return { p: best, group: lab && lab.id }
   }
-  return jsx('div', { ref: wrap, className: 'ck-canvas-wrap', style: { position: 'relative', flex: 1, minHeight: 240 }, children:
-    jsx('canvas', { ref, 'aria-label': 'Fleet constellation', role: 'img', style: { display: 'block', cursor: 'crosshair' },
-      onMouseMove: (e) => { anim.current.hover = hit(e) }, onMouseLeave: () => { anim.current.hover = null },
-      onClick: (e) => { const p = hit(e); $selected.set(p); if (p && onPick) onPick(p) },
-      onDoubleClick: (e) => { const p = hit(e); if (p) actions.openChat(p) } })
+  return jsx('div', { ref: wrap, className: 'ck-canvas-wrap', style: { position: 'relative', flex: 1, minHeight: 360 }, children:
+    jsx('canvas', { ref, 'aria-label': 'Department orbit: units grouped by department', role: 'img', style: { display: 'block', cursor: 'pointer' },
+      onMouseMove: (e) => { anim.current.hover = at(e).p }, onMouseLeave: () => { anim.current.hover = null },
+      onClick: (e) => { const { p, group } = at(e); if (group) { const f = $filter.get(); $filter.set({ ...f, group: f.group === group ? null : group }); return } $selected.set(p); if (p && onPick) onPick(p) },
+      onDoubleClick: (e) => { const { p } = at(e); if (p) actions.openChat(p) } })
   })
 }
 function nearest(hist, t) { let best = null, bd = Infinity; for (const p of hist) { const d = Math.abs(p.ts - t); if (d < bd) { bd = d; best = p } } return best }
@@ -436,7 +490,7 @@ function Swimlanes() {
       ctx2.setTransform(dpr, 0, 0, dpr, 0, 0); ctx2.clearRect(0, 0, w, h)
       const P = palette(c); const now = snap.ts; const span = prefs.laneMinutes * 60; const x0 = 110, x1 = w - 8
       const X = (t) => x0 + ((t - (now - span)) / span) * (x1 - x0)
-      const rowH = Math.max(14, Math.min(26, (h - 18) / Math.max(1, rows.length)))
+      const rowH = Math.max(8, Math.min(20, (h - 18) / Math.max(1, rows.length)))
       ctx2.font = `11px ${P.sans}`
       rows.forEach((row, i) => {
         const y = 4 + i * rowH
@@ -472,7 +526,7 @@ function Swimlanes() {
   const drag = useRef(false)
   return jsxs('div', { className: 'ck-lanes-box', children: [
     jsxs('div', { className: 'ck-lh', children: [`last ${prefs.laneMinutes} min`, ...STATES.map(s => jsxsk('span', { key: s, className: `ck-leg ck-st-${s}`, children: [jsx(Glyph, { s }), STATE_LABEL[s]] }))] }),
-    jsx('div', { ref: wrap, className: 'ck-lanes', style: { height: Math.max(90, Math.min(220, 20 + rows.length * 22)), position: 'relative' }, children:
+    jsx('div', { ref: wrap, className: 'ck-lanes', style: { height: Math.max(60, Math.min(140, 22 + rows.length * 12)), position: 'relative' }, children:
       jsx('canvas', { ref, 'aria-label': 'Swimlanes', role: 'img', style: { display: 'block', cursor: 'ew-resize' },
         onMouseDown: (e) => { drag.current = true; scrub(e) }, onMouseMove: (e) => { if (drag.current) scrub(e) },
         onMouseUp: (e) => { drag.current = false }, onMouseLeave: () => { drag.current = false }, onDoubleClick: () => $replayT.set(null) }) })
@@ -490,8 +544,11 @@ const CK_CSS = `
 .hermes-cockpit[data-ck-theme=app]{--ck-text:var(--ui-text);--ck-muted:var(--ui-text-secondary);--ck-line:var(--ui-border);--ck-line-gold:var(--ui-border);}
 .hermes-cockpit[data-ck-theme=app]{--ck-s-blocked:var(--ui-danger);--ck-s-failed:var(--ui-warning);--ck-s-task:var(--ui-accent);--ck-s-working:var(--ui-success);--ck-s-idle:var(--ui-text-secondary);--ck-s-off:var(--ui-border);}
 .hermes-cockpit[data-ck-theme=app]{--ck-serif:system-ui,sans-serif;--ck-sans:system-ui,sans-serif;--ck-mono:ui-monospace,monospace;}
-.hermes-cockpit{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--ck-bg);color:var(--ck-text);font:13px/1.35 var(--ck-sans);}
+.hermes-cockpit{display:flex;flex-direction:column;height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;background:var(--ck-bg);color:var(--ck-text);font:13px/1.35 var(--ck-sans);}
 .hermes-cockpit *{box-sizing:border-box;}
+.hermes-cockpit>*{flex-shrink:0;}
+.ck-thin{scrollbar-width:thin;scrollbar-color:var(--ck-s-idle) transparent;}
+.ck-thin::-webkit-scrollbar{height:6px;width:6px;} .ck-thin::-webkit-scrollbar-track{background:transparent;} .ck-thin::-webkit-scrollbar-thumb{background:var(--ck-s-idle);border-radius:3px;}
 .hermes-cockpit button{font:inherit;color:inherit;cursor:pointer;border-radius:3px;}
 .hermes-cockpit button:focus-visible,.hermes-cockpit input:focus-visible,.hermes-cockpit select:focus-visible{outline:2px solid var(--ck-accent);outline-offset:1px;}
 .hermes-cockpit .ck-st-blocked{--ck-sc:var(--ck-s-blocked);} .hermes-cockpit .ck-st-failed{--ck-sc:var(--ck-s-failed);} .hermes-cockpit .ck-st-task{--ck-sc:var(--ck-s-task);}
@@ -499,14 +556,15 @@ const CK_CSS = `
 .ck-g{color:var(--ck-sc);display:inline-block;min-width:1em;text-align:center;}
 .ck-mono{font-family:var(--ck-mono);}
 .ck-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}
-.ck-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px 18px;padding:10px 14px;background:var(--ck-surface);border-bottom:1px solid var(--ck-line-gold);}
+.ck-bar{display:flex;align-items:center;flex-wrap:nowrap;gap:8px 14px;padding:6px 12px;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--ck-s-idle) transparent;background:var(--ck-surface);border-bottom:1px solid var(--ck-line-gold);}
 .ck-brand{display:flex;align-items:center;gap:10px;}
-.ck-title{font:600 19px var(--ck-serif);letter-spacing:.01em;}
+.ck-title{white-space:nowrap;font:600 17px var(--ck-serif);letter-spacing:.01em;}
 .ck-seg{display:inline-flex;border:1px solid var(--ck-line);border-radius:3px;overflow:hidden;}
 .ck-seg span{padding:2px 9px;font:600 10px var(--ck-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ck-muted);}
 .ck-seg span.on{background:var(--ck-accent);color:var(--ck-on-accent);}
-.ck-chips{display:flex;flex-wrap:wrap;gap:6px;}
-.ck-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border:1px solid var(--ck-line);border-radius:999px;background:transparent;font-size:11px;letter-spacing:.05em;text-transform:uppercase;}
+.ck-chips{display:flex;flex-wrap:nowrap;gap:5px;}
+.ck-narrow .ck-bar{flex-wrap:wrap;overflow-x:visible;} .ck-narrow .ck-chips{flex-wrap:wrap;}
+.ck-chip{display:inline-flex;align-items:center;flex:none;gap:5px;height:22px;padding:0 8px;white-space:nowrap;border:1px solid var(--ck-line);border-radius:999px;background:transparent;font-size:11px;letter-spacing:.05em;text-transform:uppercase;}
 .ck-chip:hover{border-color:var(--ck-accent);}
 .ck-chip .n{font-family:var(--ck-mono);font-weight:600;}
 .ck-chip.dim{opacity:.45;}
@@ -515,20 +573,23 @@ const CK_CSS = `
 .ck-chip.hot .ck-g{color:inherit;}
 .ck-chip.bad{border-color:var(--ck-s-failed);color:var(--ck-s-failed);}
 .ck-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ck-s-failed);}
-.ck-kpi{display:flex;flex-direction:column;line-height:1.15;}
-.ck-kpi b{font:600 14px var(--ck-mono);font-variant-numeric:tabular-nums;}
+.ck-kpi{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 5px;line-height:1.15;white-space:nowrap;}
+.ck-kpi b{font:600 13px var(--ck-mono);font-variant-numeric:tabular-nums;}
 .ck-kpi span{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ck-muted);}
 .ck-kpi.warn b{color:var(--ck-accent);} .ck-kpi.bad b{color:var(--ck-s-failed);}
-.ck-gauge{width:100%;min-width:90px;height:3px;margin-top:4px;background:var(--ck-line);border-radius:3px;overflow:hidden;}
+.ck-gauge{flex-basis:100%;min-width:90px;height:3px;margin-top:2px;background:var(--ck-line);border-radius:3px;overflow:hidden;}
 .ck-gauge i{display:block;height:100%;background:var(--ck-accent);}
 .ck-gauge.over i{background:var(--ck-s-failed);}
 .ck-note{padding:4px 14px;font-size:11px;color:var(--ck-muted);}
 .ck-note.demo{color:var(--ck-accent);}
 .ck-toast{font-size:12px;} .ck-toast.error{color:var(--ck-s-failed);} .ck-toast.warn{color:var(--ck-accent);}
-.ck-rail{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--ck-line);font-size:11px;}
+.ck-rail{display:flex;flex-wrap:nowrap;align-items:center;gap:8px;padding:5px 12px;border-bottom:1px solid var(--ck-line);font-size:11px;}
 .ck-sp{flex:1;}
+.ck-rchips{display:flex;flex:1;min-width:0;align-items:center;gap:6px;overflow-x:auto;padding-bottom:2px;}
+.ck-rpin{display:flex;flex:none;align-items:center;gap:8px;}
+.ck-narrow .ck-rail{flex-wrap:wrap;} .ck-narrow .ck-rchips{flex-basis:100%;}
 .ck-board{color:var(--ck-muted);font-family:var(--ck-mono);font-size:11px;}
-.ck-input{background:var(--ck-surface);border:1px solid var(--ck-line);color:var(--ck-text);border-radius:3px;padding:4px 8px;font:12px var(--ck-sans);min-width:170px;}
+.ck-input{background:var(--ck-surface);border:1px solid var(--ck-line);color:var(--ck-text);border-radius:3px;padding:4px 8px;font:12px var(--ck-sans);min-width:150px;}
 .ck-btn{padding:4px 10px;border:1px solid var(--ck-line);background:transparent;font-size:12px;}
 .ck-btn:hover{border-color:var(--ck-accent);}
 .ck-btn.sm{padding:2px 8px;font-size:11px;}
@@ -536,21 +597,24 @@ const CK_CSS = `
 .ck-btn.gold{background:var(--ck-accent);border-color:var(--ck-accent);color:var(--ck-on-accent);font-weight:600;}
 .ck-vt{display:inline-flex;gap:0;}
 .ck-vt .ck-btn:first-child{border-radius:3px 0 0 3px;} .ck-vt .ck-btn:last-child{border-radius:0 3px 3px 0;border-left:0;}
-.ck-queue{padding:10px 14px;background:var(--ck-surface);border-bottom:1px solid var(--ck-line-gold);}
-.ck-qh{font:600 11px var(--ck-sans);letter-spacing:.1em;text-transform:uppercase;color:var(--ck-accent);margin-bottom:8px;}
-.ck-qrow{display:flex;gap:10px;overflow-x:auto;padding-bottom:4px;}
-.ck-card{flex:0 0 270px;display:flex;flex-direction:column;border:1px solid var(--ck-line);border-top:2px solid var(--ck-sc);border-radius:3px;background:var(--ck-bg);}
-.ck-cb{display:flex;flex-direction:column;gap:3px;min-width:0;padding:8px 10px 4px;border:0;background:none;text-align:left;}
+.ck-queue{padding:6px 12px 8px;background:var(--ck-surface);border-bottom:1px solid var(--ck-line-gold);}
+.ck-qh{display:flex;align-items:center;gap:8px;margin-bottom:6px;font:600 11px var(--ck-sans);letter-spacing:.1em;text-transform:uppercase;color:var(--ck-accent);}
+.ck-qh button{border:0;background:none;padding:0 4px;color:inherit;}
+.ck-qrow{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;}
+.ck-card{flex:0 0 290px;height:56px;display:flex;align-items:stretch;gap:6px;padding:0 8px 0 0;border:1px solid var(--ck-line);border-top:2px solid var(--ck-sc);border-radius:3px;background:var(--ck-bg);}
+.ck-cb{flex:1;display:flex;flex-direction:column;justify-content:center;gap:3px;min-width:0;padding:0 0 0 10px;border:0;background:none;text-align:left;}
 .ck-l1{display:flex;align-items:baseline;gap:6px;min-width:0;}
 .ck-l1 .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.ck-l1 .gr{color:var(--ck-muted);font-size:11px;white-space:nowrap;}
+.ck-l1 .gr{color:var(--ck-muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .ck-l1 .age,.ck-l1 .md{margin-left:auto;font:11px var(--ck-mono);color:var(--ck-muted);white-space:nowrap;}
 .ck-l2{display:flex;gap:6px;min-width:0;font-size:12px;}
 .ck-l2 .id{font-family:var(--ck-mono);color:var(--ck-sc);white-space:nowrap;}
 .ck-l2 .tt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ck-muted);}
-.ck-ca{display:flex;gap:6px;padding:4px 10px 8px;}
-.ck-main{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;}
-.ck-grid{flex:1;min-height:0;overflow:auto;padding:12px 14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;align-content:start;}
+.ck-ca{display:flex;flex-direction:column;justify-content:center;gap:3px;}
+.ck-ca .ck-btn{padding:1px 7px;font-size:10px;line-height:16px;white-space:nowrap;}
+.ck-body{display:flex;flex:1 0 auto;min-height:360px;}
+.ck-main{flex:1;min-width:0;min-height:360px;display:flex;flex-direction:column;}
+.ck-grid{flex:1 0 auto;min-height:360px;padding:12px 14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px 16px;align-content:start;}
 .ck-col h3{margin:0 0 8px;padding-bottom:4px;display:flex;align-items:baseline;gap:8px;font:500 16px var(--ck-serif);border-bottom:1px solid var(--ck-line-gold);}
 .ck-col h3 small{font:11px var(--ck-mono);color:var(--ck-muted);}
 .ck-tiles{display:flex;flex-direction:column;gap:4px;}
@@ -566,12 +630,14 @@ const CK_CSS = `
 .ck-tile svg{grid-column:2;grid-row:2;display:block;}
 .ck-compact .ck-tile svg{display:none;}
 .ck-tile.ck-st-idle .nm,.ck-tile.ck-st-off .nm{color:var(--ck-muted);}
+.ck-more{width:100%;margin-top:2px;padding:2px 8px;border:1px dashed var(--ck-line);background:none;color:var(--ck-muted);font-size:11px;}
+.ck-more:hover{border-color:var(--ck-accent);color:var(--ck-accent);}
 .ck-empty{padding:18px 14px;color:var(--ck-muted);font-size:12px;}
 .ck-lanes-box{border-top:1px solid var(--ck-line-gold);}
 .ck-lh{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;padding:6px 14px 0;font:600 10px var(--ck-sans);letter-spacing:.1em;text-transform:uppercase;color:var(--ck-muted);}
 .ck-leg{display:inline-flex;align-items:center;gap:4px;font-weight:400;letter-spacing:.04em;}
-.ck-side{display:flex;flex-direction:column;min-height:0;background:var(--ck-surface);}
-.ck-drawer{flex:3 1 0;min-height:0;overflow:auto;padding:12px 14px;font-size:12px;}
+.ck-side{display:flex;flex-direction:column;min-height:360px;background:var(--ck-surface);}
+.ck-drawer{flex:3 1 auto;min-height:0;overflow:auto;padding:12px 14px;font-size:12px;}
 .ck-eyebrow{display:flex;align-items:center;gap:8px;font:600 10px var(--ck-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--ck-muted);}
 .ck-badge{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border:1px solid var(--ck-sc);border-radius:3px;color:var(--ck-sc);font-weight:600;}
 .ck-name{margin:4px 0 2px;font:500 24px/1.15 var(--ck-serif);}
@@ -617,7 +683,9 @@ function shortModel(m) { return m ? String(m).split('/').pop().replace(/^claude-
 function countStates(snap) { const c = {}; STATES.forEach(s => { c[s] = 0 }); unitsOf(snap).forEach(u => { if (c[u.state] != null) c[u.state]++ }); return c }
 function taskItems(u) { return [].concat(u.blocked || [], u.failed || [], u.task ? [u.task] : []) }
 // The card a unit is about: the one it is blocked on, the one that failed, else its running task.
-function unitTask(u) { return (u.state === 'blocked' && (u.blocked || [])[0]) || (u.state === 'failed' && (u.failed || [])[0]) || u.task || (u.blocked || [])[0] || (u.failed || [])[0] || null }
+function cleanTitle(t) { return String(t == null ? '' : t).replace(/\\[tnr]/g, ' ').replace(/\s+/g, ' ').trim() } // real and literal \t \n runs -> one space
+function unitTask(u) { const t = rawTask(u); return t ? { ...t, title: cleanTitle(t.title) } : null }
+function rawTask(u) { return (u.state === 'blocked' && (u.blocked || [])[0]) || (u.state === 'failed' && (u.failed || [])[0]) || u.task || (u.blocked || [])[0] || (u.failed || [])[0] || null }
 function unitMatches(u, q) {
   q = (q || '').trim().toLowerCase(); if (!q) return true
   return u.profile.toLowerCase().includes(q) || (u.display_name || '').toLowerCase().includes(q) || taskItems(u).some(t => String(t.id || '').toLowerCase().includes(q) || String(t.title || '').toLowerCase().includes(q))
@@ -635,7 +703,7 @@ function MissionBar({ ctx }) {
   const ceiling = snap && snap.spend_ceiling_usd; const spend = t ? t.cost_today_usd : 0; const over = !!(ceiling && spend > ceiling)
   const hb = snap && snap.gateway && snap.gateway.heartbeat_age_s
   const toggleState = (s) => { const next = new Set(filter.states); if (next.has(s) && next.size > 1) next.delete(s); else next.add(s); $filter.set({ ...filter, states: next }) }
-  return jsxs('div', { className: 'ck-bar', children: [
+  return jsxs('div', { className: 'ck-bar ck-thin', children: [
     jsxs('div', { className: 'ck-brand', children: [
       jsx(LogoMark, {}), jsx('span', { className: 'ck-title', children: snap ? snap.title : 'Hermes Cockpit' }),
       jsx('span', { className: 'ck-seg', role: 'group', 'aria-label': 'Data source', title: err || `data: ${mode}`, children: ['live', 'rpc', 'demo'].map(m => jsxk('span', { key: m, className: mode === m ? 'on' : '', 'aria-current': mode === m ? 'true' : undefined, children: m })) })
@@ -659,30 +727,33 @@ function GroupRail({ ctx }) {
   if (!snap) return null
   const pick = (id) => $filter.set({ ...filter, group: filter.group === id ? null : id })
   return jsxs('div', { className: 'ck-rail', children: [
-    jsxs('button', { type: 'button', className: cx('ck-chip', !filter.group && 'sel'), 'aria-pressed': !filter.group, onClick: () => pick(null), children: ['All units ', jsx('span', { className: 'n', children: snap.totals.units })] }),
-    ...(snap.groups || []).map(g => {
-      const members = g.profiles.map(p => snap.units[p]).filter(Boolean); const hot = members.some(u => u.state === 'blocked' || u.state === 'failed')
-      return jsxsk('button', { key: g.id, type: 'button', className: cx('ck-chip', filter.group === g.id && 'sel'), 'aria-pressed': filter.group === g.id, onClick: () => pick(g.id), children: [g.label, ' ', jsx('span', { className: 'n', children: members.length }), hot ? jsx('span', { className: 'ck-dot', title: 'needs you or failed' }) : null, hot ? jsx('span', { className: 'ck-sr', children: ' needs attention' }) : null] })
-    }),
-    jsx('span', { className: 'ck-sp' }),
-    snap.pipeline && Object.keys(snap.pipeline).length ? jsx('span', { className: 'ck-board', children: 'board: ' + ['todo', 'ready', 'running', 'blocked', 'review', 'done'].filter(k => snap.pipeline[k] != null).map(k => `${k} ${snap.pipeline[k]}`).join(' · ') }) : null,
-    jsx('input', { className: 'ck-input', 'aria-label': 'Find unit or task id', placeholder: 'Find unit or task id', 'data-ck-search': '1', value: filter.q, onChange: (e) => $filter.set({ ...filter, q: e.target.value }) }),
-    jsxs('span', { className: 'ck-vt', role: 'group', 'aria-label': 'View', children: [
-      jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view !== 'constellation' && 'on'), 'aria-pressed': prefs.view !== 'constellation', onClick: () => setPrefs(ctx, { view: 'grid' }), children: 'Grid' }),
-      jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view === 'constellation' && 'on'), 'aria-pressed': prefs.view === 'constellation', onClick: () => setPrefs(ctx, { view: 'constellation' }), children: 'Constellation' })
+    jsxs('div', { className: 'ck-rchips ck-thin', children: [
+      jsxs('button', { type: 'button', className: cx('ck-chip', !filter.group && 'sel'), 'aria-pressed': !filter.group, onClick: () => pick(null), children: ['All units ', jsx('span', { className: 'n', children: snap.totals.units })] }),
+      ...(snap.groups || []).map(g => {
+        const members = g.profiles.map(p => snap.units[p]).filter(Boolean); const hot = members.some(u => u.state === 'blocked' || u.state === 'failed')
+        return jsxsk('button', { key: g.id, type: 'button', className: cx('ck-chip', filter.group === g.id && 'sel'), 'aria-pressed': filter.group === g.id, onClick: () => pick(g.id), children: [g.label, ' ', jsx('span', { className: 'n', children: members.length }), hot ? jsx('span', { className: 'ck-dot', title: 'needs you or failed' }) : null, hot ? jsx('span', { className: 'ck-sr', children: ' needs attention' }) : null] })
+      }),
+      snap.pipeline && Object.keys(snap.pipeline).length ? jsx('span', { className: 'ck-board', style: { whiteSpace: 'nowrap', marginLeft: 8 }, children: 'board: ' + ['todo', 'ready', 'running', 'blocked', 'review', 'done'].filter(k => snap.pipeline[k] != null).map(k => `${k} ${snap.pipeline[k]}`).join(' · ') }) : null
+    ] }),
+    jsxs('div', { className: 'ck-rpin', children: [
+      jsx('input', { className: 'ck-input', 'aria-label': 'Find unit or task id', placeholder: 'Find unit or task id', 'data-ck-search': '1', value: filter.q, onChange: (e) => $filter.set({ ...filter, q: e.target.value }) }),
+      jsxs('span', { className: 'ck-vt', role: 'group', 'aria-label': 'View', children: [
+        jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view !== 'constellation' && 'on'), 'aria-pressed': prefs.view !== 'constellation', onClick: () => setPrefs(ctx, { view: 'grid' }), children: 'Grid' }),
+        jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view === 'constellation' && 'on'), 'aria-pressed': prefs.view === 'constellation', onClick: () => setPrefs(ctx, { view: 'constellation' }), children: 'Orbit' })
+      ] })
     ] })
   ] })
 }
 
-function NeedsQueue() {
-  const snap = useAtom($snap); const filter = useAtom($filter)
+function NeedsQueue({ ctx }) {
+  const snap = useAtom($snap); const filter = useAtom($filter); const prefs = useAtom($prefs)
   if (!snap) return null
   const list = unitsOf(snap).filter(u => (u.state === 'blocked' || u.state === 'failed') && (!filter.group || u.group === filter.group) && unitMatches(u, filter.q)).sort(byPriority)
   if (!list.length) return null
-  const nb = list.filter(u => u.state === 'blocked').length, nf = list.length - nb
+  const nb = list.filter(u => u.state === 'blocked').length, nf = list.length - nb; const open = !prefs.queueCollapsed
   return jsxs('section', { className: 'ck-queue', 'aria-label': 'Needs you', children: [
-    jsxs('div', { className: 'ck-qh', children: [`◆ needs you · ${nb} waiting · ${nf} failed`] }),
-    jsx('div', { className: 'ck-qrow', children: list.map(u => {
+    jsxs('div', { className: 'ck-qh', children: [`◆ needs you · ${nb} waiting · ${nf} failed`, jsx('button', { type: 'button', 'aria-expanded': open, 'aria-label': open ? 'Collapse the needs-you queue' : 'Expand the needs-you queue', onClick: () => setPrefs(ctx, { queueCollapsed: open }), children: open ? '▾' : '▸' })] }),
+    open && jsx('div', { className: 'ck-qrow ck-thin', children: list.map(u => {
       const t = unitTask(u)
       return jsxsk('div', { key: u.profile, className: `ck-card ck-st-${u.state}`, children: [
         jsxs('button', { type: 'button', className: 'ck-cb', onClick: () => $selected.set(u.profile), 'aria-label': `${unitName(u)}, ${STATE_LABEL[u.state]}${t ? ', ' + t.title : ''}`, children: [
@@ -711,9 +782,10 @@ function tileSub(u) {
   return { text: u.latest_session.title || STATE_LABEL[u.state] }
 }
 
+const MAX_TILES = 8
 function UnitGrid() {
   const snap = useAtom($snap); const filter = useAtom($filter); const prefs = useAtom($prefs); const sel = useAtom($selected); const hist = useAtom($history)
-  const pts = useMemo(() => hist.slice(-30), [hist])
+  const pts = useMemo(() => hist.slice(-30), [hist]); const [open, setOpen] = useState(() => new Set())
   if (!snap) return jsx('div', { className: 'ck-empty', children: 'Waiting for the first snapshot…' })
   const cols = (snap.groups || []).map(g => {
     const members = g.profiles.map(p => snap.units[p]).filter(Boolean)
@@ -721,9 +793,9 @@ function UnitGrid() {
     return { g, members, vis }
   }).filter(c => c.vis.length)
   if (!cols.length) return jsx('div', { className: 'ck-empty', children: 'No unit matches the current filter.' })
-  return jsx('div', { className: 'ck-grid', children: cols.map(({ g, members, vis }) => jsxsk('section', { key: g.id, className: 'ck-col', 'aria-label': g.label, children: [
+  return jsx('div', { className: 'ck-grid ck-thin', style: { minHeight: 360 }, children: cols.map(({ g, members, vis }) => jsxsk('section', { key: g.id, className: 'ck-col', 'aria-label': g.label, children: [
     jsxs('h3', { children: [g.label, jsx('small', { children: `${members.length} · ${members.filter(u => u.state === 'working' || u.state === 'task').length} active` })] }),
-    jsx('div', { className: 'ck-tiles', children: vis.map(u => {
+    jsx('div', { className: 'ck-tiles', children: vis.slice(0, open.has(g.id) ? vis.length : MAX_TILES).map(u => {
       const sub = tileSub(u)
       return jsxsk('button', { key: u.profile, type: 'button', className: `ck-tile ck-st-${u.state}`, 'aria-pressed': sel === u.profile, 'aria-label': `${unitName(u)}, ${STATE_LABEL[u.state]}, ${(sub.id ? sub.id + ' ' : '') + sub.text}`, title: u.profile, onClick: () => $selected.set(sel === u.profile ? null : u.profile), onDoubleClick: () => actions.openChat(u.profile), children: [
         jsxs('span', { className: 't1', children: [jsx(Glyph, { s: u.state }), jsx('span', { className: 'nm', children: unitName(u) })] }),
@@ -731,7 +803,8 @@ function UnitGrid() {
         jsxs('span', { className: 't2', children: [sub.id ? jsx('span', { className: 'id', children: sub.id + ' ' }) : null, sub.text] }),
         jsx(Spark, { vals: pts.map(pt => (pt.tpm || {})[u.profile] || 0) })
       ] })
-    }) })
+    }) }),
+    vis.length > MAX_TILES ? jsx('button', { type: 'button', className: 'ck-more', 'aria-expanded': open.has(g.id), onClick: () => setOpen(o => { const n = new Set(o); if (n.has(g.id)) n.delete(g.id); else n.add(g.id); return n }), children: open.has(g.id) ? 'Show fewer' : `+${vis.length - MAX_TILES} more` }) : null
   ] })) })
 }
 
@@ -813,22 +886,28 @@ function Feed() {
   ] })
 }
 
-function setPrefs(ctx, patch) { const next = { ...$prefs.get(), ...patch }; $prefs.set(next); try { ctx.storage.set('prefs', next) } catch (e) { /* storage unavailable */ } }
+let autoLanesOff = false // lanes were switched off for a short window, not by the user: do not persist that
+function setPrefs(ctx, patch) { const next = { ...$prefs.get(), ...patch }; $prefs.set(next); if ('showLanes' in patch) autoLanesOff = false; const store = { ...next }; if (autoLanesOff) delete store.showLanes; try { ctx.storage.set('prefs', store) } catch (e) { /* storage unavailable */ } }
 
 function Page({ ctx }) {
   const prefs = useAtom($prefs); const mode = useAtom($mode)
   const [narrow, setNarrow] = useState(false); const root = useRef(null)
+  useEffect(() => { // first load in a short window: lanes off unless the user has ever set the pref
+    const el = root.current; if (!el) return
+    let saved = null; try { saved = ctx.storage.get('prefs', null) } catch (e) { /* none */ }
+    if (!(saved && 'showLanes' in saved) && el.getBoundingClientRect().height < 800 && $prefs.get().showLanes) { autoLanesOff = true; $prefs.set({ ...$prefs.get(), showLanes: false }) }
+  }, [])
   useEffect(() => { const el = root.current; if (!el || typeof ResizeObserver === 'undefined') return; const ro = new ResizeObserver(() => setNarrow(el.getBoundingClientRect().width < 900)); ro.observe(el); return () => ro.disconnect() }, [])
-  return jsxs('div', { ref: root, className: cx('hermes-cockpit', prefs.density === 'compact' && 'ck-compact'), 'data-ck-theme': prefs.theme === 'app' ? 'app' : 'gsp', children: [
+  return jsxs('div', { ref: root, className: cx('hermes-cockpit ck-thin', prefs.density === 'compact' && 'ck-compact', narrow && 'ck-narrow'), 'data-ck-theme': prefs.theme === 'app' ? 'app' : 'gsp', children: [
     jsx('style', { children: CK_CSS }),
     jsx(MissionBar, { ctx }),
     jsx(GroupRail, { ctx }),
     mode === 'demo' && jsx('div', { className: 'ck-note demo', children: prefs.demo ? 'Demo data (Settings → Plugins → Hermes Cockpit to turn off).' : 'Showing demo data: the sensor is not enabled on this backend and RPC is unreachable. Enable `hermes-cockpit` in plugins.enabled for the live picture.' }),
     mode === 'rpc' && jsx('div', { className: 'ck-note', children: 'RPC-only picture: sessions per profile, no board/cost. The sensor half is not reachable at /api/plugins/hermes-cockpit — add `hermes-cockpit` to plugins.enabled on the backend, and check its dashboard/manifest.json `name` equals `hermes-cockpit` (the API mounts under /api/plugins/<manifest name>/).' }),
-    jsx(NeedsQueue, {}),
-    jsxs('div', { style: { display: 'flex', flex: 1, minHeight: 0, flexDirection: narrow ? 'column' : 'row' }, children: [
+    jsx(NeedsQueue, { ctx }),
+    jsxs('div', { className: 'ck-body', style: { flexDirection: narrow ? 'column' : 'row' }, children: [
       jsxs('div', { className: 'ck-main', children: [prefs.view === 'constellation' ? jsx(Constellation, { ctx }) : jsx(UnitGrid, {}), prefs.showLanes && jsx(Swimlanes, {})] }),
-      jsxs('div', { className: 'ck-side', style: { width: narrow ? 'auto' : 360, borderLeft: narrow ? 'none' : '1px solid var(--ck-line-gold)', borderTop: narrow ? '1px solid var(--ck-line-gold)' : 'none', minHeight: narrow ? 260 : 0 }, children: [jsx(Drawer, { ctx }), jsx(Feed, {})] })
+      jsxs('div', { className: 'ck-side', style: { width: narrow ? 'auto' : 360, borderLeft: narrow ? 'none' : '1px solid var(--ck-line-gold)', borderTop: narrow ? '1px solid var(--ck-line-gold)' : 'none', minHeight: narrow ? 260 : 360 }, children: [jsx(Drawer, { ctx }), jsx(Feed, {})] })
     ] })
   ] })
 }
@@ -907,4 +986,4 @@ export default {
 }
 
 // Exposed for tests only (not part of the plugin contract).
-export const __test = { atom, layout, totalsOf, demoSnap, diffToFeed, fmtAge, fmtTok, $snap, $feed, $history, $mode, $prefs, $selected, $filter, $replayT, STATES }
+export const __test = { orbitLabels, cleanTitle, atom, layout, totalsOf, demoSnap, diffToFeed, fmtAge, fmtTok, $snap, $feed, $history, $mode, $prefs, $selected, $filter, $replayT, STATES }
