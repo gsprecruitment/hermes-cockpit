@@ -51,6 +51,11 @@ const $selected = atom(null)   // profile name
 const $filter = atom({ q: '', states: new Set(STATES), group: null })
 const $replayT = atom(null)    // epoch seconds when scrubbing; null = live
 const $notice = atom(null)     // {text, kind}
+const $dim = atom({ w: 1200, h: 700, size: 'medium', short: false })  // the page's own size, measured
+const $feedOpen = atom(false)  // slide-over panel open on the feed tab without a unit
+const $tab = atom('unit')      // slide-over tab: 'unit' | 'feed'
+// Layout buckets by the page's own size (not the screen): wide >= 1400, medium 1100-1399, narrow < 1100; short < 650 high.
+function chooseLayout(w, h) { return { w, h, size: w >= 1400 ? 'wide' : (w >= 1100 ? 'medium' : 'narrow'), short: h < 650 } }
 
 function fmtAge(s) { if (s == null) return '—'; if (s < 60) return `${Math.round(s)}s`; if (s < 3600) return `${Math.round(s / 60)}m`; if (s < 86400) return `${(s / 3600).toFixed(1)}h`; return `${Math.round(s / 86400)}d` }
 function fmtTok(n) { n = Number(n || 0); if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`; if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`; return String(Math.round(n)) }
@@ -463,8 +468,8 @@ function Constellation({ ctx, onPick }) {
     const lab = best ? null : A.labels.find(l => x >= l.x - 2 && x <= l.x + l.w + 2 && y >= l.y - 2 && y <= l.y + l.h + 2)
     return { p: best, group: lab && lab.id }
   }
-  return jsx('div', { ref: wrap, className: 'ck-canvas-wrap', style: { position: 'relative', flex: 1, minHeight: 360 }, children:
-    jsx('canvas', { ref, 'aria-label': 'Department orbit: units grouped by department', role: 'img', style: { display: 'block', cursor: 'pointer' },
+  return jsx('div', { ref: wrap, className: 'ck-canvas-wrap', style: { position: 'relative', flex: '1 1 0', minHeight: 0, overflow: 'hidden' }, children:
+    jsx('canvas', { ref, 'aria-label': 'Department orbit: units grouped by department', role: 'img', style: { display: 'block', position: 'absolute', top: 0, left: 0, cursor: 'pointer' },
       onMouseMove: (e) => { anim.current.hover = at(e).p }, onMouseLeave: () => { anim.current.hover = null },
       onClick: (e) => { const { p, group } = at(e); if (group) { const f = $filter.get(); $filter.set({ ...f, group: f.group === group ? null : group }); return } $selected.set(p); if (p && onPick) onPick(p) },
       onDoubleClick: (e) => { const { p } = at(e); if (p) actions.openChat(p) } })
@@ -475,7 +480,7 @@ function nearest(hist, t) { let best = null, bd = Infinity; for (const p of hist
 // ── swimlanes (history strip with replay scrubber) ──────────────────────────────────────
 function Swimlanes() {
   const ref = useRef(null); const wrap = useRef(null)
-  const snap = useAtom($snap); const hist = useAtom($history); const prefs = useAtom($prefs); const replayT = useAtom($replayT); const selected = useAtom($selected)
+  const snap = useAtom($snap); const hist = useAtom($history); const prefs = useAtom($prefs); const replayT = useAtom($replayT); const selected = useAtom($selected); const dimS = useAtom($dim)
   const rows = useMemo(() => {
     if (!snap) return []
     if (prefs.laneBy === 'unit') return unitsOf(snap).filter(u => prefs.showIdle || u.state !== 'idle').map(u => ({ id: u.profile, label: u.profile, members: [u.profile] }))
@@ -526,7 +531,7 @@ function Swimlanes() {
   const drag = useRef(false)
   return jsxs('div', { className: 'ck-lanes-box', children: [
     jsxs('div', { className: 'ck-lh', children: [`last ${prefs.laneMinutes} min`, ...STATES.map(s => jsxsk('span', { key: s, className: `ck-leg ck-st-${s}`, children: [jsx(Glyph, { s }), STATE_LABEL[s]] }))] }),
-    jsx('div', { ref: wrap, className: 'ck-lanes', style: { height: Math.max(60, Math.min(140, 22 + rows.length * 12)), position: 'relative' }, children:
+    jsx('div', { ref: wrap, className: 'ck-lanes', style: { height: Math.max(60, Math.min(dimS.short ? 96 : 140, 22 + rows.length * 12)), position: 'relative' }, children:
       jsx('canvas', { ref, 'aria-label': 'Swimlanes', role: 'img', style: { display: 'block', cursor: 'ew-resize' },
         onMouseDown: (e) => { drag.current = true; scrub(e) }, onMouseMove: (e) => { if (drag.current) scrub(e) },
         onMouseUp: (e) => { drag.current = false }, onMouseLeave: () => { drag.current = false }, onDoubleClick: () => $replayT.set(null) }) })
@@ -544,11 +549,9 @@ const CK_CSS = `
 .hermes-cockpit[data-ck-theme=app]{--ck-text:var(--ui-text);--ck-muted:var(--ui-text-secondary);--ck-line:var(--ui-border);--ck-line-gold:var(--ui-border);}
 .hermes-cockpit[data-ck-theme=app]{--ck-s-blocked:var(--ui-danger);--ck-s-failed:var(--ui-warning);--ck-s-task:var(--ui-accent);--ck-s-working:var(--ui-success);--ck-s-idle:var(--ui-text-secondary);--ck-s-off:var(--ui-border);}
 .hermes-cockpit[data-ck-theme=app]{--ck-serif:system-ui,sans-serif;--ck-sans:system-ui,sans-serif;--ck-mono:ui-monospace,monospace;}
-.hermes-cockpit{display:flex;flex-direction:column;height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;background:var(--ck-bg);color:var(--ck-text);font:13px/1.35 var(--ck-sans);}
+.hermes-cockpit{position:relative;display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;background:var(--ck-bg);color:var(--ck-text);font:13px/1.35 var(--ck-sans);}
 .hermes-cockpit *{box-sizing:border-box;}
-.hermes-cockpit>*{flex-shrink:0;}
-.ck-thin{scrollbar-width:thin;scrollbar-color:var(--ck-s-idle) transparent;}
-.ck-thin::-webkit-scrollbar{height:6px;width:6px;} .ck-thin::-webkit-scrollbar-track{background:transparent;} .ck-thin::-webkit-scrollbar-thumb{background:var(--ck-s-idle);border-radius:3px;}
+.hermes-cockpit>*{flex-shrink:0;min-width:0;}
 .hermes-cockpit button{font:inherit;color:inherit;cursor:pointer;border-radius:3px;}
 .hermes-cockpit button:focus-visible,.hermes-cockpit input:focus-visible,.hermes-cockpit select:focus-visible{outline:2px solid var(--ck-accent);outline-offset:1px;}
 .hermes-cockpit .ck-st-blocked{--ck-sc:var(--ck-s-blocked);} .hermes-cockpit .ck-st-failed{--ck-sc:var(--ck-s-failed);} .hermes-cockpit .ck-st-task{--ck-sc:var(--ck-s-task);}
@@ -556,14 +559,17 @@ const CK_CSS = `
 .ck-g{color:var(--ck-sc);display:inline-block;min-width:1em;text-align:center;}
 .ck-mono{font-family:var(--ck-mono);}
 .ck-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}
-.ck-bar{display:flex;align-items:center;flex-wrap:nowrap;gap:8px 14px;padding:6px 12px;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--ck-s-idle) transparent;background:var(--ck-surface);border-bottom:1px solid var(--ck-line-gold);}
-.ck-brand{display:flex;align-items:center;gap:10px;}
-.ck-title{white-space:nowrap;font:600 17px var(--ck-serif);letter-spacing:.01em;}
+.ck-bar{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;padding:6px 12px;background:var(--ck-surface);border-bottom:1px solid var(--ck-line-gold);}
+.ck-brand{display:flex;align-items:center;gap:10px;min-width:0;flex:0 1 auto;}
+.ck-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 17px var(--ck-serif);letter-spacing:.01em;}
 .ck-seg{display:inline-flex;border:1px solid var(--ck-line);border-radius:3px;overflow:hidden;}
 .ck-seg span{padding:2px 9px;font:600 10px var(--ck-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ck-muted);}
 .ck-seg span.on{background:var(--ck-accent);color:var(--ck-on-accent);}
-.ck-chips{display:flex;flex-wrap:nowrap;gap:5px;}
-.ck-narrow .ck-bar{flex-wrap:wrap;overflow-x:visible;} .ck-narrow .ck-chips{flex-wrap:wrap;}
+.ck-chips{display:flex;flex-wrap:wrap;gap:5px;}
+.ck-kcl{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;margin-left:auto;}
+.ck-medium .ck-chip .lb,.ck-narrow .ck-chip .lb{display:none;}
+.ck-medium .ck-kpi span,.ck-narrow .ck-kpi span{font-size:9px;}
+
 .ck-chip{display:inline-flex;align-items:center;flex:none;gap:5px;height:22px;padding:0 8px;white-space:nowrap;border:1px solid var(--ck-line);border-radius:999px;background:transparent;font-size:11px;letter-spacing:.05em;text-transform:uppercase;}
 .ck-chip:hover{border-color:var(--ck-accent);}
 .ck-chip .n{font-family:var(--ck-mono);font-weight:600;}
@@ -583,11 +589,14 @@ const CK_CSS = `
 .ck-note{padding:4px 14px;font-size:11px;color:var(--ck-muted);}
 .ck-note.demo{color:var(--ck-accent);}
 .ck-toast{font-size:12px;} .ck-toast.error{color:var(--ck-s-failed);} .ck-toast.warn{color:var(--ck-accent);}
-.ck-rail{display:flex;flex-wrap:nowrap;align-items:center;gap:8px;padding:5px 12px;border-bottom:1px solid var(--ck-line);font-size:11px;}
+.ck-rail{display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px 8px;padding:5px 12px;border-bottom:1px solid var(--ck-line);font-size:11px;}
 .ck-sp{flex:1;}
-.ck-rchips{display:flex;flex:1;min-width:0;align-items:center;gap:6px;overflow-x:auto;padding-bottom:2px;}
-.ck-rpin{display:flex;flex:none;align-items:center;gap:8px;}
-.ck-narrow .ck-rail{flex-wrap:wrap;} .ck-narrow .ck-rchips{flex-basis:100%;}
+.ck-rchips{display:flex;flex:1 1 300px;min-width:0;flex-wrap:wrap;align-items:center;gap:5px;position:relative;}
+.ck-pop{position:absolute;top:26px;right:0;z-index:20;min-width:200px;max-height:240px;overflow-y:auto;padding:4px;background:var(--ck-tip);border:1px solid var(--ck-line-gold);border-radius:3px;box-shadow:0 6px 18px rgba(0,0,0,.35);}
+.ck-pop button{display:flex;width:100%;gap:8px;justify-content:space-between;padding:4px 8px;border:0;background:none;text-align:left;font-size:12px;}
+.ck-pop button:hover{background:var(--ck-line);}
+.ck-rpin{display:flex;flex:0 1 auto;flex-wrap:wrap;align-items:center;gap:6px;margin-left:auto;}
+.ck-narrow .ck-board{display:none;} .ck-narrow .ck-input{min-width:0;width:120px;}
 .ck-board{color:var(--ck-muted);font-family:var(--ck-mono);font-size:11px;}
 .ck-input{background:var(--ck-surface);border:1px solid var(--ck-line);color:var(--ck-text);border-radius:3px;padding:4px 8px;font:12px var(--ck-sans);min-width:150px;}
 .ck-btn{padding:4px 10px;border:1px solid var(--ck-line);background:transparent;font-size:12px;}
@@ -600,8 +609,8 @@ const CK_CSS = `
 .ck-queue{padding:6px 12px 8px;background:var(--ck-surface);border-bottom:1px solid var(--ck-line-gold);}
 .ck-qh{display:flex;align-items:center;gap:8px;margin-bottom:6px;font:600 11px var(--ck-sans);letter-spacing:.1em;text-transform:uppercase;color:var(--ck-accent);}
 .ck-qh button{border:0;background:none;padding:0 4px;color:inherit;}
-.ck-qrow{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;}
-.ck-card{flex:0 0 290px;height:56px;display:flex;align-items:stretch;gap:6px;padding:0 8px 0 0;border:1px solid var(--ck-line);border-top:2px solid var(--ck-sc);border-radius:3px;background:var(--ck-bg);}
+.ck-qrow{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px;}
+.ck-card{height:56px;min-width:0;display:flex;align-items:stretch;gap:6px;padding:0 8px 0 0;border:1px solid var(--ck-line);border-top:2px solid var(--ck-sc);border-radius:3px;background:var(--ck-bg);}
 .ck-cb{flex:1;display:flex;flex-direction:column;justify-content:center;gap:3px;min-width:0;padding:0 0 0 10px;border:0;background:none;text-align:left;}
 .ck-l1{display:flex;align-items:baseline;gap:6px;min-width:0;}
 .ck-l1 .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -612,9 +621,11 @@ const CK_CSS = `
 .ck-l2 .tt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ck-muted);}
 .ck-ca{display:flex;flex-direction:column;justify-content:center;gap:3px;}
 .ck-ca .ck-btn{padding:1px 7px;font-size:10px;line-height:16px;white-space:nowrap;}
-.ck-body{display:flex;flex:1 0 auto;min-height:360px;}
-.ck-main{flex:1;min-width:0;min-height:360px;display:flex;flex-direction:column;}
-.ck-grid{flex:1 0 auto;min-height:360px;padding:12px 14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px 16px;align-content:start;}
+.ck-body{position:relative;display:flex;flex:1 1 0;min-height:0;min-width:0;}
+.ck-main{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;}
+.ck-scroll{flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:var(--ck-s-idle) transparent;}
+.ck-scroll::-webkit-scrollbar{width:6px;} .ck-scroll::-webkit-scrollbar-thumb{background:var(--ck-s-idle);border-radius:3px;}
+.ck-grid{padding:12px 14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px 14px;align-content:start;}
 .ck-col h3{margin:0 0 8px;padding-bottom:4px;display:flex;align-items:baseline;gap:8px;font:500 16px var(--ck-serif);border-bottom:1px solid var(--ck-line-gold);}
 .ck-col h3 small{font:11px var(--ck-mono);color:var(--ck-muted);}
 .ck-tiles{display:flex;flex-direction:column;gap:4px;}
@@ -624,7 +635,7 @@ const CK_CSS = `
 .ck-tile[aria-pressed=true]{outline:1px solid var(--ck-accent);outline-offset:0;}
 .ck-tile .t1{display:flex;align-items:baseline;gap:6px;min-width:0;}
 .ck-tile .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;}
-.ck-tile .md{font:10px var(--ck-mono);color:var(--ck-muted);white-space:nowrap;}
+.ck-tile .md{font:10px var(--ck-mono);color:var(--ck-muted);white-space:nowrap;max-width:10ch;overflow:hidden;text-overflow:ellipsis;}
 .ck-tile .t2{grid-column:1;font:11px var(--ck-mono);color:var(--ck-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .ck-tile .t2 .id{color:var(--ck-sc);}
 .ck-tile svg{grid-column:2;grid-row:2;display:block;}
@@ -636,7 +647,11 @@ const CK_CSS = `
 .ck-lanes-box{border-top:1px solid var(--ck-line-gold);}
 .ck-lh{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;padding:6px 14px 0;font:600 10px var(--ck-sans);letter-spacing:.1em;text-transform:uppercase;color:var(--ck-muted);}
 .ck-leg{display:inline-flex;align-items:center;gap:4px;font-weight:400;letter-spacing:.04em;}
-.ck-side{display:flex;flex-direction:column;min-height:360px;background:var(--ck-surface);}
+.ck-side{display:flex;flex-direction:column;flex:none;width:320px;min-height:0;background:var(--ck-surface);border-left:1px solid var(--ck-line-gold);}
+.ck-over{position:absolute;top:0;right:0;bottom:0;width:min(380px,45%);z-index:10;display:flex;flex-direction:column;background:var(--ck-surface);border-left:1px solid var(--ck-line-gold);box-shadow:-8px 0 24px rgba(0,0,0,.35);}
+.ck-tabs{display:flex;align-items:center;gap:4px;padding:6px 10px;border-bottom:1px solid var(--ck-line);}
+.ck-over .ck-feed{border-top:0;}
+.ck-over .ck-drawer{flex:3 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;padding:12px 14px;font-size:12px;}
 .ck-drawer{flex:3 1 auto;min-height:0;overflow:auto;padding:12px 14px;font-size:12px;}
 .ck-eyebrow{display:flex;align-items:center;gap:8px;font:600 10px var(--ck-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--ck-muted);}
 .ck-badge{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border:1px solid var(--ck-sc);border-radius:3px;color:var(--ck-sc);font-weight:600;}
@@ -660,7 +675,7 @@ const CK_CSS = `
 .ck-feed{flex:1 1 0;min-height:110px;display:flex;flex-direction:column;border-top:1px solid var(--ck-line-gold);}
 .ck-feed .hd{display:flex;gap:8px;align-items:center;padding:8px 14px 4px;font:600 10px var(--ck-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--ck-muted);}
 .ck-feed .hd label{text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer;}
-.ck-fl{overflow:auto;padding:0 14px 10px;font-size:11px;}
+.ck-fl{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:0 14px 10px;font-size:11px;}
 .ck-fr{display:flex;gap:8px;align-items:baseline;padding:2px 0;border-bottom:1px dashed var(--ck-line);}
 .ck-fr .tm{font:10px var(--ck-mono);color:var(--ck-muted);white-space:nowrap;}
 .ck-fr button{background:none;border:0;padding:0;text-align:left;}
@@ -679,7 +694,12 @@ const cx = (...a) => a.filter(Boolean).join(' ')
 function Glyph({ s }) { return jsx('span', { className: 'ck-g', 'aria-hidden': 'true', children: GLYPH[s] || '·' }) }
 function Badge({ s }) { return jsxs('span', { className: `ck-badge ck-st-${s}`, children: [jsx(Glyph, { s }), STATE_LABEL[s]] }) }
 function fmtHM(ts) { try { return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) } catch (e) { return '' } }
-function shortModel(m) { return m ? String(m).split('/').pop().replace(/^claude-/, '').slice(0, 16) : '' }
+function shortModel(m) { // 'qwen3.8-flash' -> 'qwen flash', 'deepseek-v4-flash' -> 'deepseek'
+  if (!m) return ''
+  const toks = String(m).split('/').pop().toLowerCase().replace(/^claude-/, '').split(/[-_\s]+/).map(t => t.replace(/\d[\d.]*$/, '')).filter(t => t && !/^v\d*$/.test(t))
+  const j = toks.join(' ')
+  return (j.length <= 10 ? j : (toks[0] || j)).slice(0, 10)
+}
 function countStates(snap) { const c = {}; STATES.forEach(s => { c[s] = 0 }); unitsOf(snap).forEach(u => { if (c[u.state] != null) c[u.state]++ }); return c }
 function taskItems(u) { return [].concat(u.blocked || [], u.failed || [], u.task ? [u.task] : []) }
 // The card a unit is about: the one it is blocked on, the one that failed, else its running task.
@@ -690,7 +710,7 @@ function unitMatches(u, q) {
   q = (q || '').trim().toLowerCase(); if (!q) return true
   return u.profile.toLowerCase().includes(q) || (u.display_name || '').toLowerCase().includes(q) || taskItems(u).some(t => String(t.id || '').toLowerCase().includes(q) || String(t.title || '').toLowerCase().includes(q))
 }
-const unitName = (u) => u.display_name || u.profile
+const unitName = (u) => cleanTitle(u.display_name || u.profile)
 const groupLabel = (snap, u) => { const g = (snap.groups || []).find(x => x.id === u.group || x.profiles.includes(u.profile)); return g ? g.label : u.group || '' }
 const byPriority = (a, b) => (STATE_PRI[a.state] - STATE_PRI[b.state]) || (a.since || 0) - (b.since || 0) || a.profile.localeCompare(b.profile)
 
@@ -703,57 +723,73 @@ function MissionBar({ ctx }) {
   const ceiling = snap && snap.spend_ceiling_usd; const spend = t ? t.cost_today_usd : 0; const over = !!(ceiling && spend > ceiling)
   const hb = snap && snap.gateway && snap.gateway.heartbeat_age_s
   const toggleState = (s) => { const next = new Set(filter.states); if (next.has(s) && next.size > 1) next.delete(s); else next.add(s); $filter.set({ ...filter, states: next }) }
-  return jsxs('div', { className: 'ck-bar ck-thin', children: [
+  return jsxs('div', { className: 'ck-bar', children: [
     jsxs('div', { className: 'ck-brand', children: [
       jsx(LogoMark, {}), jsx('span', { className: 'ck-title', children: snap ? snap.title : 'Hermes Cockpit' }),
       jsx('span', { className: 'ck-seg', role: 'group', 'aria-label': 'Data source', title: err || `data: ${mode}`, children: ['live', 'rpc', 'demo'].map(m => jsxk('span', { key: m, className: mode === m ? 'on' : '', 'aria-current': mode === m ? 'true' : undefined, children: m })) })
     ] }),
     jsx('div', { className: 'ck-chips', role: 'group', 'aria-label': 'Filter by state', children: STATES.map(s => {
       const on = filter.states.has(s)
-      return jsxsk('button', { key: s, type: 'button', 'aria-pressed': on, title: `${on ? 'Hide' : 'Show'} ${STATE_LABEL[s]}`, className: cx('ck-chip', `ck-st-${s}`, !on && 'dim', s === 'blocked' && counts.blocked > 0 && 'hot', s === 'failed' && counts.failed > 0 && 'bad'), onClick: () => toggleState(s), children: [jsx(Glyph, { s }), jsx('span', { children: STATE_LABEL[s] }), jsx('span', { className: 'n', children: counts[s] })] })
+      return jsxsk('button', { key: s, type: 'button', 'aria-pressed': on, title: `${on ? 'Hide' : 'Show'} ${STATE_LABEL[s]}`, 'aria-label': `${STATE_LABEL[s]} ${counts[s]}`, className: cx('ck-chip', `ck-st-${s}`, !on && 'dim', s === 'blocked' && counts.blocked > 0 && 'hot', s === 'failed' && counts.failed > 0 && 'bad'), onClick: () => toggleState(s), children: [jsx(Glyph, { s }), jsx('span', { className: 'lb', children: STATE_LABEL[s] }), jsx('span', { className: 'n', children: counts[s] })] })
     }) }),
-    jsx('span', { className: 'ck-sp' }),
+    jsxs('div', { className: 'ck-kcl', children: [
     t && jsx(Kpi, { v: `${fmtTok(t.tokens_per_min)}/min`, l: 'tokens' }),
     t && jsx(Kpi, { v: fmtUsd(spend) + (ceiling ? ` / ${fmtUsd(ceiling)}` : ''), l: 'spend today', tone: over ? 'bad' : '', children: ceiling ? jsx('div', { className: cx('ck-gauge', over && 'over'), 'aria-hidden': 'true', children: jsx('i', { style: { width: `${Math.min(100, Math.round(spend / ceiling * 100))}%` } }) }) : null }),
     snap && jsx(Kpi, { v: hb == null ? '—' : fmtAge(hb), l: 'gateway hb', tone: hb != null && hb > 300 ? 'warn' : '' }),
     snap && (snap.signals || []).map(sg => jsxk(Kpi, { key: sg.id, v: sg.age_s == null ? '—' : fmtAge(sg.age_s), l: sg.label, tone: sg.ok ? '' : 'bad' })),
     jsx('button', { type: 'button', className: 'ck-btn sm', title: 'Swimlanes (L)', 'aria-pressed': !!prefs.showLanes, onClick: () => setPrefs(ctx, { showLanes: !prefs.showLanes }), children: prefs.showLanes ? 'lanes ▾' : 'lanes ▸' }),
     n && Date.now() - n.at < 6000 && jsx('span', { role: 'status', className: cx('ck-toast', n.kind), children: n.text })
+    ] })
   ] })
 }
 
+// Department chips wrap onto at most two rows; whatever does not fit goes into a "+N" popover (no scrollbars).
 function GroupRail({ ctx }) {
-  const snap = useAtom($snap); const filter = useAtom($filter); const prefs = useAtom($prefs)
+  const snap = useAtom($snap); const filter = useAtom($filter); const prefs = useAtom($prefs); const dim = useAtom($dim); const feedOpen = useAtom($feedOpen)
+  const [cut, setCut] = useState(null); const [pop, setPop] = useState(false); const box = useRef(null)
+  const sig = snap ? (snap.groups || []).map(g => g.id + ':' + g.profiles.length).join('|') + '|' + (filter.group || '') + '|' + dim.w : ''
+  useEffect(() => { setCut(null); setPop(false) }, [sig])
+  useEffect(() => { // phase 2: after a full render, count how many chips land in the first two rows
+    if (cut !== null) return; const el = box.current; if (!el) return
+    const kids = Array.from(el.querySelectorAll('[data-chip]')); if (!kids.length) return
+    const tops = Array.from(new Set(kids.map(k => k.offsetTop))).sort((a, b) => a - b)
+    if (tops.length <= 2) { setCut(kids.length); return }
+    setCut(Math.max(1, kids.filter(k => k.offsetTop < tops[2]).length - 1))
+  })
   if (!snap) return null
-  const pick = (id) => $filter.set({ ...filter, group: filter.group === id ? null : id })
+  const pick = (id) => { $filter.set({ ...filter, group: filter.group === id ? null : id }); setPop(false) }
+  const chips = [{ id: null, label: 'All units', n: snap.totals.units, hot: false }].concat((snap.groups || []).map(g => { const members = g.profiles.map(p => snap.units[p]).filter(Boolean); return { id: g.id, label: g.label, n: members.length, hot: members.some(u => u.state === 'blocked' || u.state === 'failed') } }))
+  const shown = cut == null ? chips : chips.slice(0, cut); const hidden = cut == null ? [] : chips.slice(cut)
+  const chip = (c) => jsxsk('button', { key: String(c.id), 'data-chip': '1', type: 'button', className: cx('ck-chip', filter.group === c.id && 'sel'), 'aria-pressed': filter.group === c.id, onClick: () => pick(c.id), children: [c.label, ' ', jsx('span', { className: 'n', children: c.n }), c.hot ? jsx('span', { className: 'ck-dot', title: 'needs you or failed' }) : null, c.hot ? jsx('span', { className: 'ck-sr', children: ' needs attention' }) : null] })
   return jsxs('div', { className: 'ck-rail', children: [
-    jsxs('div', { className: 'ck-rchips ck-thin', children: [
-      jsxs('button', { type: 'button', className: cx('ck-chip', !filter.group && 'sel'), 'aria-pressed': !filter.group, onClick: () => pick(null), children: ['All units ', jsx('span', { className: 'n', children: snap.totals.units })] }),
-      ...(snap.groups || []).map(g => {
-        const members = g.profiles.map(p => snap.units[p]).filter(Boolean); const hot = members.some(u => u.state === 'blocked' || u.state === 'failed')
-        return jsxsk('button', { key: g.id, type: 'button', className: cx('ck-chip', filter.group === g.id && 'sel'), 'aria-pressed': filter.group === g.id, onClick: () => pick(g.id), children: [g.label, ' ', jsx('span', { className: 'n', children: members.length }), hot ? jsx('span', { className: 'ck-dot', title: 'needs you or failed' }) : null, hot ? jsx('span', { className: 'ck-sr', children: ' needs attention' }) : null] })
-      }),
-      snap.pipeline && Object.keys(snap.pipeline).length ? jsx('span', { className: 'ck-board', style: { whiteSpace: 'nowrap', marginLeft: 8 }, children: 'board: ' + ['todo', 'ready', 'running', 'blocked', 'review', 'done'].filter(k => snap.pipeline[k] != null).map(k => `${k} ${snap.pipeline[k]}`).join(' · ') }) : null
+    jsxs('div', { ref: box, className: 'ck-rchips', children: [
+      ...shown.map(chip),
+      hidden.length ? jsxs('button', { type: 'button', className: cx('ck-chip', hidden.some(c => filter.group === c.id) && 'sel'), 'aria-expanded': pop, 'aria-haspopup': 'true', onClick: () => setPop(!pop), children: [`+${hidden.length}`, hidden.some(c => c.hot) ? jsx('span', { className: 'ck-dot', title: 'needs you or failed' }) : null] }) : null,
+      pop && hidden.length ? jsx('div', { className: 'ck-pop', role: 'menu', children: hidden.map(c => jsxsk('button', { key: String(c.id), type: 'button', role: 'menuitem', onClick: () => pick(c.id), children: [jsx('span', { children: c.label + (c.hot ? ' ●' : '') }), jsx('span', { className: 'ck-mono', children: c.n })] })) }) : null
     ] }),
+    snap.pipeline && Object.keys(snap.pipeline).length ? jsx('span', { className: 'ck-board', style: { alignSelf: 'center' }, children: 'board: ' + ['todo', 'ready', 'running', 'blocked', 'review', 'done'].filter(k => snap.pipeline[k] != null).map(k => `${k} ${snap.pipeline[k]}`).join(' · ') }) : null,
     jsxs('div', { className: 'ck-rpin', children: [
       jsx('input', { className: 'ck-input', 'aria-label': 'Find unit or task id', placeholder: 'Find unit or task id', 'data-ck-search': '1', value: filter.q, onChange: (e) => $filter.set({ ...filter, q: e.target.value }) }),
       jsxs('span', { className: 'ck-vt', role: 'group', 'aria-label': 'View', children: [
         jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view !== 'constellation' && 'on'), 'aria-pressed': prefs.view !== 'constellation', onClick: () => setPrefs(ctx, { view: 'grid' }), children: 'Grid' }),
         jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view === 'constellation' && 'on'), 'aria-pressed': prefs.view === 'constellation', onClick: () => setPrefs(ctx, { view: 'constellation' }), children: 'Orbit' })
-      ] })
+      ] }),
+      dim.size !== 'wide' && jsx('button', { type: 'button', className: cx('ck-btn sm', feedOpen && 'on'), 'aria-pressed': feedOpen, title: 'Event feed', onClick: () => { $tab.set('feed'); $feedOpen.set(!feedOpen) }, children: 'Feed' })
     ] })
   ] })
 }
 
 function NeedsQueue({ ctx }) {
-  const snap = useAtom($snap); const filter = useAtom($filter); const prefs = useAtom($prefs)
+  const snap = useAtom($snap); const filter = useAtom($filter); const prefs = useAtom($prefs); const dim = useAtom($dim); const [showAll, setShowAll] = useState(false)
   if (!snap) return null
   const list = unitsOf(snap).filter(u => (u.state === 'blocked' || u.state === 'failed') && (!filter.group || u.group === filter.group) && unitMatches(u, filter.q)).sort(byPriority)
   if (!list.length) return null
   const nb = list.filter(u => u.state === 'blocked').length, nf = list.length - nb; const open = !prefs.queueCollapsed
+  const cols = Math.max(1, Math.floor((dim.w - 24 + 8) / 308)); const cap = cols * (dim.short ? 1 : 2); const more = list.length > cap
+  const vis = more && !showAll ? list.slice(0, cap) : list
   return jsxs('section', { className: 'ck-queue', 'aria-label': 'Needs you', children: [
-    jsxs('div', { className: 'ck-qh', children: [`◆ needs you · ${nb} waiting · ${nf} failed`, jsx('button', { type: 'button', 'aria-expanded': open, 'aria-label': open ? 'Collapse the needs-you queue' : 'Expand the needs-you queue', onClick: () => setPrefs(ctx, { queueCollapsed: open }), children: open ? '▾' : '▸' })] }),
-    open && jsx('div', { className: 'ck-qrow ck-thin', children: list.map(u => {
+    jsxs('div', { className: 'ck-qh', children: [`◆ needs you · ${nb} waiting · ${nf} failed`, jsx('button', { type: 'button', 'aria-expanded': open, 'aria-label': open ? 'Collapse the needs-you queue' : 'Expand the needs-you queue', onClick: () => setPrefs(ctx, { queueCollapsed: open }), children: open ? '▾' : '▸' }), open && more ? jsx('button', { type: 'button', className: 'ck-btn sm', 'aria-expanded': showAll, onClick: () => setShowAll(!showAll), children: showAll ? 'show fewer' : `show all ${list.length}` }) : null] }),
+    open && jsx('div', { className: 'ck-qrow', children: vis.map(u => {
       const t = unitTask(u)
       return jsxsk('div', { key: u.profile, className: `ck-card ck-st-${u.state}`, children: [
         jsxs('button', { type: 'button', className: 'ck-cb', onClick: () => $selected.set(u.profile), 'aria-label': `${unitName(u)}, ${STATE_LABEL[u.state]}${t ? ', ' + t.title : ''}`, children: [
@@ -777,9 +813,9 @@ function Spark({ vals, w = 64, h = 16 }) {
 function tileSub(u) {
   const t = unitTask(u)
   if (u.state === 'off') return { text: 'off duty' }
-  if (t && u.state !== 'idle') return { id: t.id, text: u.current_step || t.title || '' }
+  if (t && u.state !== 'idle') return { id: t.id, text: cleanTitle(u.current_step || t.title || '') }
   if (u.state === 'idle' || !u.latest_session) { const la = u.latest_session && u.latest_session.last_activity_at; return { text: la ? `idle · last run ${fmtHM(la)}` : 'idle' } }
-  return { text: u.latest_session.title || STATE_LABEL[u.state] }
+  return { text: cleanTitle(u.latest_session.title) || STATE_LABEL[u.state] }
 }
 
 const MAX_TILES = 8
@@ -793,13 +829,13 @@ function UnitGrid() {
     return { g, members, vis }
   }).filter(c => c.vis.length)
   if (!cols.length) return jsx('div', { className: 'ck-empty', children: 'No unit matches the current filter.' })
-  return jsx('div', { className: 'ck-grid ck-thin', style: { minHeight: 360 }, children: cols.map(({ g, members, vis }) => jsxsk('section', { key: g.id, className: 'ck-col', 'aria-label': g.label, children: [
+  return jsx('div', { className: 'ck-grid', style: { minHeight: 360 }, children: cols.map(({ g, members, vis }) => jsxsk('section', { key: g.id, className: 'ck-col', 'aria-label': g.label, children: [
     jsxs('h3', { children: [g.label, jsx('small', { children: `${members.length} · ${members.filter(u => u.state === 'working' || u.state === 'task').length} active` })] }),
     jsx('div', { className: 'ck-tiles', children: vis.slice(0, open.has(g.id) ? vis.length : MAX_TILES).map(u => {
       const sub = tileSub(u)
       return jsxsk('button', { key: u.profile, type: 'button', className: `ck-tile ck-st-${u.state}`, 'aria-pressed': sel === u.profile, 'aria-label': `${unitName(u)}, ${STATE_LABEL[u.state]}, ${(sub.id ? sub.id + ' ' : '') + sub.text}`, title: u.profile, onClick: () => $selected.set(sel === u.profile ? null : u.profile), onDoubleClick: () => actions.openChat(u.profile), children: [
         jsxs('span', { className: 't1', children: [jsx(Glyph, { s: u.state }), jsx('span', { className: 'nm', children: unitName(u) })] }),
-        jsx('span', { className: 'md', children: shortModel(u.model) }),
+        jsx('span', { className: 'md', title: u.model || '', children: shortModel(u.model) }),
         jsxs('span', { className: 't2', children: [sub.id ? jsx('span', { className: 'id', children: sub.id + ' ' }) : null, sub.text] }),
         jsx(Spark, { vals: pts.map(pt => (pt.tpm || {})[u.profile] || 0) })
       ] })
@@ -808,27 +844,32 @@ function UnitGrid() {
   ] })) })
 }
 
-function Drawer({ ctx }) {
+let focusHandled = 0
+function cleanUnit(u) { // every free-text title the drawer shows goes through cleanTitle
+  const ct = (x) => ({ ...x, title: cleanTitle(x.title) })
+  return { ...u, blocked: (u.blocked || []).map(ct), failed: (u.failed || []).map(ct), task: u.task ? ct(u.task) : null, latest_session: u.latest_session ? ct(u.latest_session) : null, current_step: u.current_step ? cleanTitle(u.current_step) : u.current_step }
+}
+function Drawer({ ctx, overlay }) {
   const snap = useAtom($snap); const sel = useAtom($selected); const mode = useAtom($mode); const fc = useAtom($focusCreate)
   const [detail, setDetail] = useState(null); const [steer, setSteer] = useState(''); const [task, setTask] = useState('')
-  const createRef = useRef(null); const seenFc = useRef(fc)
+  const createRef = useRef(null)
   useEffect(() => {
     setDetail(null); if (!sel || mode !== 'live') return
     let alive = true; ctx.rest(`/unit/${encodeURIComponent(sel)}`).then(d => { if (alive) setDetail(d) }).catch(() => {})
     return () => { alive = false }
   }, [sel, mode, snap && snap.rev])
   useEffect(() => { // "Hand a card" from the queue: select the unit and put the cursor in its create form
-    if (fc === seenFc.current) return; seenFc.current = fc
+    if (fc === focusHandled) return; focusHandled = fc // module-level: the drawer may mount after the request (slide-over)
     const el = createRef.current; if (!el) return
     try { if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest' }); el.focus() } catch (e) { /* no layout */ }
   }, [fc])
   if (!snap || !sel || !snap.units[sel]) return jsx('div', { className: 'ck-drawer', children: jsx('div', { className: 'ck-note', children: 'Select a unit for its live steps and controls. Double-click opens a chat with it.' }) })
-  const u = snap.units[sel]; const d = detail || u; const sid = u.latest_session && u.latest_session.id; const cur = unitTask(u); const running = u.state === 'working' || u.state === 'task'
+  const u = cleanUnit(snap.units[sel]); const d0 = detail || u; const d = { ...d0, recent_sessions: (d0.recent_sessions || []).map(x => ({ ...x, title: cleanTitle(x.title) })), recent_tool_calls: (d0.recent_tool_calls || []).map(x => ({ ...x, target: x.target == null ? x.target : cleanTitle(x.target) })) }; const sid = u.latest_session && u.latest_session.id; const cur = unitTask(u); const running = u.state === 'working' || u.state === 'task'
   const row = (k, v) => v == null || v === '' ? null : jsxs('div', { className: 'ck-kv', children: [jsx('span', { children: k }), jsx('span', { children: v })] })
   const summary = () => `${u.profile} — ${STATE_LABEL[u.state]} for ${fmtAge(snap.ts - u.since)}${u.task ? `; task ${u.task.id} "${u.task.title}"` : ''}${(u.blocked || []).length ? `; blocked: ${u.blocked.map(b => b.title).join(', ')}` : ''}; today ${fmtTok(u.tokens_today)} tok ${fmtUsd(u.cost_today_usd)}`
   const doSteer = () => { if (steer.trim()) { actions.steer(u.profile, sid, steer.trim()); setSteer('') } }
   return jsxs('div', { className: `ck-drawer ck-st-${u.state}`, children: [
-    jsxs('div', { className: 'ck-eyebrow', children: [groupLabel(snap, u), '·', jsx(Badge, { s: u.state }), jsx('span', { className: 'ck-sp' }), jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => $selected.set(null), 'aria-label': 'close', children: '×' })] }),
+    jsxs('div', { className: 'ck-eyebrow', children: [groupLabel(snap, u), '·', jsx(Badge, { s: u.state }), jsx('span', { className: 'ck-sp' }), !overlay && jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => $selected.set(null), 'aria-label': 'close', children: '×' })] }),
     jsx('div', { className: 'ck-name', children: unitName(u) }),
     jsx('div', { className: 'ck-sub', children: [u.model, fmtAge(snap.ts - u.since)].filter(Boolean).join(' · ') }),
     u.description && jsx('div', { className: 'ck-desc', children: u.description }),
@@ -881,7 +922,7 @@ function Feed() {
     jsxs('div', { className: 'hd', children: ['feed', jsx('span', { className: 'ck-sp' }), sel && jsxs('label', { children: [jsx('input', { type: 'checkbox', checked: onlyMine, onChange: e => setOnlyMine(e.target.checked) }), ` only ${sel}`] })] }),
     jsx('div', { className: 'ck-fl', children: rows.length ? rows.map(e => { const gs = feedGlyph(e); return jsxsk('div', { key: e.seq, className: `ck-fr ck-st-${gs}`, children: [
       jsx('span', { className: 'tm', children: fmtClock(e.ts) }), jsx(Glyph, { s: gs }),
-      e.profile ? jsx('button', { type: 'button', onClick: () => $selected.set(e.profile), children: e.text }) : jsx('span', { children: e.text })
+      e.profile ? jsx('button', { type: 'button', onClick: () => $selected.set(e.profile), children: cleanTitle(e.text) }) : jsx('span', { children: cleanTitle(e.text) })
     ] }) }) : jsx('div', { className: 'ck-note', style: { padding: 0 }, children: 'No events yet — state changes and board events land here.' }) })
   ] })
 }
@@ -890,24 +931,42 @@ let autoLanesOff = false // lanes were switched off for a short window, not by t
 function setPrefs(ctx, patch) { const next = { ...$prefs.get(), ...patch }; $prefs.set(next); if ('showLanes' in patch) autoLanesOff = false; const store = { ...next }; if (autoLanesOff) delete store.showLanes; try { ctx.storage.set('prefs', store) } catch (e) { /* storage unavailable */ } }
 
 function Page({ ctx }) {
-  const prefs = useAtom($prefs); const mode = useAtom($mode)
-  const [narrow, setNarrow] = useState(false); const root = useRef(null)
+  const prefs = useAtom($prefs); const mode = useAtom($mode); const dim = useAtom($dim); const sel = useAtom($selected); const feedOpen = useAtom($feedOpen); const tab = useAtom($tab)
+  const root = useRef(null)
   useEffect(() => { // first load in a short window: lanes off unless the user has ever set the pref
     const el = root.current; if (!el) return
     let saved = null; try { saved = ctx.storage.get('prefs', null) } catch (e) { /* none */ }
     if (!(saved && 'showLanes' in saved) && el.getBoundingClientRect().height < 800 && $prefs.get().showLanes) { autoLanesOff = true; $prefs.set({ ...$prefs.get(), showLanes: false }) }
   }, [])
-  useEffect(() => { const el = root.current; if (!el || typeof ResizeObserver === 'undefined') return; const ro = new ResizeObserver(() => setNarrow(el.getBoundingClientRect().width < 900)); ro.observe(el); return () => ro.disconnect() }, [])
-  return jsxs('div', { ref: root, className: cx('hermes-cockpit ck-thin', prefs.density === 'compact' && 'ck-compact', narrow && 'ck-narrow'), 'data-ck-theme': prefs.theme === 'app' ? 'app' : 'gsp', children: [
+  useEffect(() => { // measure the page itself (the app's plugin area), not the screen
+    const el = root.current; if (!el) return
+    const measure = () => { const r = el.getBoundingClientRect(); if (r.width < 1) return; const n = chooseLayout(Math.round(r.width), Math.round(r.height)); const o = $dim.get(); if (o.w !== n.w || o.h !== n.h || o.size !== n.size) $dim.set(n) }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure); ro.observe(el); return () => ro.disconnect()
+  }, [])
+  useEffect(() => { if (sel) $tab.set('unit') }, [sel])
+  const wide = dim.size === 'wide'; const over = !wide && (sel || feedOpen)
+  const closeOver = () => { $selected.set(null); $feedOpen.set(false) }
+  return jsxs('div', { ref: root, className: cx('hermes-cockpit', `ck-${dim.size}`, dim.short && 'ck-short', prefs.density === 'compact' && 'ck-compact'), 'data-ck-theme': prefs.theme === 'app' ? 'app' : 'gsp', 'data-ck-layout': dim.size, children: [
     jsx('style', { children: CK_CSS }),
     jsx(MissionBar, { ctx }),
     jsx(GroupRail, { ctx }),
     mode === 'demo' && jsx('div', { className: 'ck-note demo', children: prefs.demo ? 'Demo data (Settings → Plugins → Hermes Cockpit to turn off).' : 'Showing demo data: the sensor is not enabled on this backend and RPC is unreachable. Enable `hermes-cockpit` in plugins.enabled for the live picture.' }),
     mode === 'rpc' && jsx('div', { className: 'ck-note', children: 'RPC-only picture: sessions per profile, no board/cost. The sensor half is not reachable at /api/plugins/hermes-cockpit — add `hermes-cockpit` to plugins.enabled on the backend, and check its dashboard/manifest.json `name` equals `hermes-cockpit` (the API mounts under /api/plugins/<manifest name>/).' }),
     jsx(NeedsQueue, { ctx }),
-    jsxs('div', { className: 'ck-body', style: { flexDirection: narrow ? 'column' : 'row' }, children: [
-      jsxs('div', { className: 'ck-main', children: [prefs.view === 'constellation' ? jsx(Constellation, { ctx }) : jsx(UnitGrid, {}), prefs.showLanes && jsx(Swimlanes, {})] }),
-      jsxs('div', { className: 'ck-side', style: { width: narrow ? 'auto' : 360, borderLeft: narrow ? 'none' : '1px solid var(--ck-line-gold)', borderTop: narrow ? '1px solid var(--ck-line-gold)' : 'none', minHeight: narrow ? 260 : 360 }, children: [jsx(Drawer, { ctx }), jsx(Feed, {})] })
+    jsxs('div', { className: 'ck-body', children: [
+      jsxs('div', { className: 'ck-main', children: [prefs.view === 'constellation' ? jsx(Constellation, { ctx }) : jsx('div', { className: 'ck-scroll', children: jsx(UnitGrid, {}) }), prefs.showLanes && jsx(Swimlanes, {})] }),
+      wide && jsxs('div', { className: 'ck-side', children: [jsx(Drawer, { ctx }), jsx(Feed, {})] }),
+      over && jsxs('div', { className: 'ck-over', role: 'dialog', 'aria-label': 'Unit and feed', children: [
+        jsxs('div', { className: 'ck-tabs', children: [
+          jsx('button', { type: 'button', className: cx('ck-btn sm', tab === 'unit' && 'on'), 'aria-pressed': tab === 'unit', onClick: () => $tab.set('unit'), children: 'Unit' }),
+          jsx('button', { type: 'button', className: cx('ck-btn sm', tab === 'feed' && 'on'), 'aria-pressed': tab === 'feed', onClick: () => $tab.set('feed'), children: 'Feed' }),
+          jsx('span', { className: 'ck-sp' }),
+          jsx('button', { type: 'button', className: 'ck-btn sm', 'aria-label': 'Close panel', onClick: closeOver, children: '×' })
+        ] }),
+        tab === 'feed' ? jsx(Feed, {}) : jsx(Drawer, { ctx, overlay: true })
+      ] })
     ] })
   ] })
 }
@@ -980,10 +1039,10 @@ export default {
       const onPage = document.querySelector('.hermes-cockpit'); if (!onPage) return
       const inField = /INPUT|TEXTAREA|SELECT/.test((e.target && e.target.tagName) || '')
       if (e.key === '/' && !inField) { const s = onPage.querySelector('[data-ck-search]'); if (s) { e.preventDefault(); s.focus() } }
-      if (e.key === 'Escape') { if ($replayT.get() != null) $replayT.set(null); else if (!inField) $selected.set(null) }
+      if (e.key === 'Escape') { if ($replayT.get() != null) $replayT.set(null); else if ($feedOpen.get() && !$selected.get()) $feedOpen.set(false); else if (!inField) $selected.set(null) }
     })
   }
 }
 
 // Exposed for tests only (not part of the plugin contract).
-export const __test = { orbitLabels, cleanTitle, atom, layout, totalsOf, demoSnap, diffToFeed, fmtAge, fmtTok, $snap, $feed, $history, $mode, $prefs, $selected, $filter, $replayT, STATES }
+export const __test = { chooseLayout, $dim, $feedOpen, orbitLabels, cleanTitle, atom, layout, totalsOf, demoSnap, diffToFeed, fmtAge, fmtTok, $snap, $feed, $history, $mode, $prefs, $selected, $filter, $replayT, STATES }
