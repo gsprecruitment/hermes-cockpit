@@ -663,21 +663,61 @@ function WasteList({ waste }) {
   ] })) })
 }
 
+const SPEND_UPDATE_CMD = 'hermes plugins update hermes-cockpit\nhermes gateway restart'
+const SPEND_RETRY_MS = 300000
+
+// Today-only picture from the live /fleet snapshot, for sensors that predate the /spend route.
+function spendFromSnap(snap) {
+  if (!snap || !snap.units) return null
+  const units = Object.values(snap.units)
+  const row = (u) => ({ cost: u.cost_today_usd || 0, tokens: u.tokens_today || 0, sessions: u.sessions_today || 0 })
+  const by_profile = units.map(u => ({ key: u.profile, profile: u.profile, ...row(u) })).sort((a, b) => b.cost - a.cost)
+  const gl = (snap.groups || []).map(g => {
+    const m = g.profiles.map(p => snap.units[p]).filter(Boolean)
+    return { key: g.id, label: g.label, cost: m.reduce((a, u) => a + (u.cost_today_usd || 0), 0), tokens: m.reduce((a, u) => a + (u.tokens_today || 0), 0), sessions: m.reduce((a, u) => a + (u.sessions_today || 0), 0) }
+  })
+  const by_department = gl.sort((a, b) => b.cost - a.cost)
+  const cost = units.reduce((a, u) => a + (u.cost_today_usd || 0), 0); const tokens = units.reduce((a, u) => a + (u.tokens_today || 0), 0)
+  return { cost, tokens, by_profile, by_department, ceiling: snap.spend_ceiling_usd || null }
+}
+
+function SpendFallback({ ctx, err }) {
+  const snap = useAtom($snap); const f = spendFromSnap(snap)
+  const money = { k: 'cost', label: 'Cost', num: true, fmt: fmtUsdP, w: '20%' }
+  const tokc = { k: 'tokens', label: 'Tokens', num: true, fmt: fmtTok, w: '18%' }
+  const over = f && f.ceiling && f.cost > f.ceiling
+  return jsxs('div', { className: 'ck-sp-fb', children: [
+    jsxs('div', { className: 'ck-note', role: 'alert', children: [
+      jsx('p', { children: 'The cockpit sensor on your backend is older than this view. Run on the server: ' }),
+      jsx('pre', { className: 'ck-sp-cmd', children: SPEND_UPDATE_CMD }),
+      jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => { try { navigator.clipboard.writeText(SPEND_UPDATE_CMD); notice('copied') } catch (e) { notice('clipboard unavailable', 'error') } }, children: 'Copy commands' }),
+      jsx('p', { className: 'ck-sp-fine', children: `Spend route said: ${err}. Retrying every 5 minutes.` })] }),
+    !f ? jsx('div', { className: 'ck-sp-empty', children: 'Waiting for the fleet snapshot…' }) : jsxs('div', { children: [
+      jsx('p', { className: 'ck-sp-fine', children: 'Limited view from the fleet snapshot — estimated at API prices' }),
+      jsxs('div', { className: 'ck-sp-kpis', children: [
+        jsx(SpendKpi, { label: 'Today', value: fmtUsdP(f.cost), tone: over ? 'warn' : '', sub: f.ceiling ? `ceiling ${fmtUsd(f.ceiling)} · ${Math.round(f.cost / f.ceiling * 100)}% used` : 'no spend_ceiling_usd set', pace: f.ceiling ? { budget: f.ceiling, used_pct: f.cost / f.ceiling, projected: f.cost, status: over ? 'over' : 'ok' } : null }),
+        jsx(SpendKpi, { label: 'Tokens · today', value: fmtTok(f.tokens) })] }),
+      jsxs('section', { className: 'ck-sp-panel', 'aria-label': 'By profile', children: [jsx('h3', { children: 'By profile · today' }), jsx(SpendTable, { label: 'Spend by profile', cols: [{ k: 'profile', label: 'Profile' }, money, tokc, { k: 'sessions', label: 'Sess', num: true, w: '12%' }], rows: f.by_profile, limit: 10 })] }),
+      jsxs('section', { className: 'ck-sp-panel', 'aria-label': 'By department', children: [jsx('h3', { children: 'By department · today' }), jsx(SpendTable, { label: 'Spend by department', cols: [{ k: 'label', label: 'Department' }, money, tokc, { k: 'sessions', label: 'Sess', num: true, w: '12%' }], rows: f.by_department, limit: 10 })] })] })
+  ] })
+}
+
 function SpendView({ ctx }) {
   const prefs = useAtom($prefs); const mode = useAtom($mode)
   const range = SPEND_RANGES.includes(prefs.spendRange) ? prefs.spendRange : 'month'
   const demo = mode !== 'live'
   const [st, setSt] = useState({ data: null, err: null, loading: true })
   useEffect(() => {
-    let dead = false
+    let dead = false; let failedAt = 0
     const load = async () => {
       if (demo) { setSt({ data: demoSpend(range), err: null, loading: false }); return }
+      if (failedAt && Date.now() - failedAt < SPEND_RETRY_MS - 1000) return
       try {
         const d = await ctx.rest(`/spend?range=${range}`)
         if (dead) return
         if (!d || d.error || !d.totals) throw new Error((d && d.error) || 'the sensor returned no spend data')
-        setSt({ data: d, err: null, loading: false })
-      } catch (e) { if (!dead) setSt(s => ({ ...s, err: String((e && e.message) || e), loading: false })) }
+        failedAt = 0; setSt({ data: d, err: null, loading: false })
+      } catch (e) { failedAt = Date.now(); if (!dead) setSt(s => ({ ...s, err: String((e && e.message) || e), loading: false })) }
     }
     setSt(s => ({ ...s, loading: true })); load()
     const off = demo ? null : ctx.setInterval(load, 30000)
@@ -694,7 +734,7 @@ function SpendView({ ctx }) {
     jsx('span', { className: 'ck-sp-sp' }),
     jsx('span', { className: 'ck-vt', role: 'group', 'aria-label': 'Spend range', children: SPEND_RANGES.map(r => jsxk('button', { key: r, type: 'button', className: cx('ck-btn sm', range === r && 'on'), 'aria-pressed': range === r, onClick: () => setPrefs(ctx, { spendRange: r }), children: RANGE_LABEL[r] })) })
   ] })
-  if (!d) return jsxs('div', { className: 'ck-scroll ck-spend', children: [head, st.err ? jsx('div', { className: 'ck-note', role: 'alert', children: `Spend unavailable: ${st.err}` }) : jsx('div', { className: 'ck-sp-empty', children: 'Loading spend…' })] })
+  if (!d) return jsxs('div', { className: 'ck-scroll ck-spend', children: [head, st.err ? jsx(SpendFallback, { ctx, err: st.err }) : jsx('div', { className: 'ck-sp-empty', children: 'Loading spend…' })] })
   const T = d.totals; const sel = d.selected || T[range]; const pace = d.pace || {}
   const wasteCost = d.waste ? d.waste.cost : 0
   const money = { k: 'cost', label: 'Cost', num: true, fmt: fmtUsdP, w: '17%' }
@@ -931,6 +971,8 @@ const CK_RAW = `
 .ck-sp-t .num{text-align:right;font-family:var(--ck-mono);font-variant-numeric:tabular-nums;}
 .ck-sp-t tr.click{cursor:pointer;} .ck-sp-t tr.click:hover td{background:var(--ck-line);}
 .ck-sp-empty{padding:6px 2px;font-size:11px;color:var(--ck-muted);}
+.ck-sp-cmd{margin:4px 0;padding:6px 8px;font:11px/1.4 var(--ck-mono);background:var(--ck-panel,rgba(127,127,127,.12));border-radius:4px;white-space:pre-wrap;}
+.ck-note p{margin:2px 0;}
 .ck-sp-fine{margin:6px 0 0;font-size:10px;color:var(--ck-muted);}
 .ck-sp-chart svg{display:block;width:100%;height:110px;}
 .ck-sp-axis{stroke:var(--ck-line);stroke-width:1;}

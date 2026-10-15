@@ -36,7 +36,7 @@ const { act } = require('react')
 
 // ── mock SDK ────────────────────────────────────────────────────────────────────────────
 const log = { requests: [], navigate: [], newChat: [], events: {} }
-let restMode = 'live' // live | fail
+let restMode = 'live' // live | fail | unauthorized | nospend
 const LIVE = JSON.parse(readFileSync(path.join(here, 'fixtures', 'fleet-live.json'), 'utf8'))
 const sdk = {
   ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'nav', STATUSBAR_AREAS: { left: 'sb.l', right: 'sb.r' }, PALETTE_AREA: 'palette', KEYBINDS_AREA: 'keybinds',
@@ -72,7 +72,7 @@ const ctx = {
   addEventListener: (t, type, fn, o) => { t.addEventListener(type, fn, o); return () => t.removeEventListener(type, fn, o) },
   onDispose: (fn) => disposers.push(fn), register: (c) => { contribs.push(c); return () => {} }, registerMany: (cs) => { cs.forEach(c => contribs.push(c)); return () => {} },
   registerSettingsPage: (p) => { settingsPage = p; return () => {} },
-  rest: async (p, o) => { log.requests.push(['rest', p, o && o.method]); if (restMode === 'unauthorized') { const e = new Error('401: {"error":"unauthenticated","reason":"no_cookie"}'); e.status = 401; throw e } if (restMode === 'fail') { const e = new Error('404: Plugin not found'); e.status = 404; throw e } if (p === '/fleet') return LIVE; if (p.startsWith('/feed')) return { items: /since=0\b/.test(p) ? [{ seq: 1, ts: LIVE.ts, kind: 'state', profile: 'chief', text: 'chief: idle → working' }] : [] }; if (p.startsWith('/history')) return { points: [{ ts: LIVE.ts - 600, states: { chief: 'working', sourcer: 'task' }, tpm: { chief: 1200 } }, { ts: LIVE.ts, states: { chief: 'working', sourcer: 'blocked' }, tpm: {} }] }; if (p.startsWith('/spend')) { const rg = (p.match(/range=(\w+)/) || [])[1] || 'month'; return { ...T.demoSpend(rg), demo: false } } if (p.startsWith('/unit/')) return { ...LIVE.units.chief, recent_tool_calls: [{ tool: 'read_file', target: '/x' }], recent_sessions: [{ id: 's1', title: 'A', tokens: 10, estimated_cost_usd: 0.1 }, { id: 's2', title: 'B', tokens: 5, estimated_cost_usd: 0.05 }] }; if (p === '/task') return { ok: true, task_id: 'T9' }; throw new Error('404') },
+  rest: async (p, o) => { log.requests.push(['rest', p, o && o.method]); if (restMode === 'unauthorized') { const e = new Error('401: {"error":"unauthenticated","reason":"no_cookie"}'); e.status = 401; throw e } if (restMode === 'nospend' && p.startsWith('/spend')) { const e = new Error('404: {"detail":"not found"}'); e.status = 404; throw e } if (restMode === 'fail') { const e = new Error('404: Plugin not found'); e.status = 404; throw e } if (p === '/fleet') return LIVE; if (p.startsWith('/feed')) return { items: /since=0\b/.test(p) ? [{ seq: 1, ts: LIVE.ts, kind: 'state', profile: 'chief', text: 'chief: idle → working' }] : [] }; if (p.startsWith('/history')) return { points: [{ ts: LIVE.ts - 600, states: { chief: 'working', sourcer: 'task' }, tpm: { chief: 1200 } }, { ts: LIVE.ts, states: { chief: 'working', sourcer: 'blocked' }, tpm: {} }] }; if (p.startsWith('/spend')) { const rg = (p.match(/range=(\w+)/) || [])[1] || 'month'; return { ...T.demoSpend(rg), demo: false } } if (p.startsWith('/unit/')) return { ...LIVE.units.chief, recent_tool_calls: [{ tool: 'read_file', target: '/x' }], recent_sessions: [{ id: 's1', title: 'A', tokens: 10, estimated_cost_usd: 0.1 }, { id: 's2', title: 'B', tokens: 5, estimated_cost_usd: 0.05 }] }; if (p === '/task') return { ok: true, task_id: 'T9' }; throw new Error('404') },
   socket: () => () => {}
 }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -326,6 +326,26 @@ const clickBtn = async (root_, pred) => { const b = Array.from(root_.querySelect
   await act(async () => { r3.unmount() }); host3.remove(); window.HTMLElement.prototype.getBoundingClientRect = realRect
   await act(async () => { T.$prefs.set({ ...T.$prefs.get(), view: 'grid' }) }); await act(async () => { await sleep(20) })
   assert(!page.querySelector('.ck-spend') && page.querySelector('.ck-grid'), 'switching back to Grid removes the spend view')
+}
+
+// ── 2g. spend fallback on an older sensor (no /spend route) ──────────────────────────────────
+{
+  const spendReqs = () => log.requests.filter(r => r[0] === 'rest' && String(r[1]).startsWith('/spend')).length
+  const writes = []; window.navigator.clipboard.writeText = (t) => { writes.push(t); return Promise.resolve() }
+  restMode = 'nospend'
+  await act(async () => { T.$prefs.set({ ...T.$prefs.get(), view: 'spend' }) }); await act(async () => { await sleep(120) })
+  const sp = rootEl.querySelector('.ck-spend'); const n0 = spendReqs()
+  assert(sp && /The cockpit sensor on your backend is older than this view/.test(sp.textContent) && /hermes plugins update hermes-cockpit/.test(sp.textContent) && /hermes gateway restart/.test(sp.textContent), 'old sensor: spend view shows the update note with both commands')
+  const cp = Array.from(sp.querySelectorAll('button')).find(b => b.textContent === 'Copy commands'); assert(cp, 'old sensor: Copy commands button present')
+  await act(async () => { cp.click() }); assert(writes.length === 1 && /hermes plugins update hermes-cockpit/.test(writes[0]) && /hermes gateway restart/.test(writes[0]), 'Copy commands copies both commands')
+  assert(/Limited view from the fleet snapshot — estimated at API prices/.test(sp.textContent) && /Estimated at API prices — not an invoice/.test(sp.textContent), 'old sensor: fallback label and disclaimer shown')
+  const tb = sp.querySelector('table[aria-label="Spend by profile"]'); const td = sp.querySelector('table[aria-label="Spend by department"]')
+  assert(tb && td && tb.querySelectorAll('tbody tr').length === Object.keys(LIVE.units).length, 'old sensor: per-profile and per-department fallback tables render from /fleet')
+  const costs = Array.from(tb.querySelectorAll('tbody tr')).map(r => parseFloat(r.children[1].textContent.replace('$', '')))
+  assert(costs.every((c, i) => i === 0 || costs[i - 1] >= c), 'fallback profile table is sorted by cost')
+  await act(async () => { await sleep(150) }); assert(spendReqs() === n0, 'failed /spend is not hammered (retry every 5 minutes)')
+  restMode = 'live'
+  await act(async () => { T.$prefs.set({ ...T.$prefs.get(), view: 'grid' }) }); await act(async () => { await sleep(20) })
 }
 
 // ── 3. rpc door ─────────────────────────────────────────────────────────────────────────
