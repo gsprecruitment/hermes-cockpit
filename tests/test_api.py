@@ -42,3 +42,10 @@ def test_routes(client):
     assert client.get(f"{base}/unit/zzz").status_code == 404
     r = client.post(f"{base}/task", json={"title": "hello world", "assignee": "p1"})
     assert r.status_code == 403  # write disabled by default
+
+
+def test_spend_route(client):
+    base = "/api/plugins/hermes-cockpit"
+    r = client.get(f"{base}/spend?range=week").json()
+    assert r["range"] == "week" and "totals" in r and "data_notes" in r
+    assert client.get(f"{base}/spend?range=bogus").status_code == 422

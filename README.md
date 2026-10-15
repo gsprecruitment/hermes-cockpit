@@ -76,6 +76,10 @@ ceiling, hidden profiles, file-age signals, thresholds. Hot-reloaded on change.
 Display preferences (poll interval, lanes, density, reduced motion, demo data) live per laptop
 under Settings → Plugins → Hermes Cockpit.
 
+## Spend view
+
+Third main view next to Grid and Orbit (rail toggle or Layout menu): cost today/week/month against `spend_ceiling_usd` (a per-day figure), a per-day stacked bar split by provider, and tables by profile, department, provider, model, source and kanban card, plus a waste list (zero-output, one-message, error-ended and orphaned sessions). All figures are **estimated at API prices, not an invoice**; subscription plans have no per-token price. The `data_notes` of `/spend` list what is estimated and what is missing. Without the sensor the view shows a labelled demo dataset.
+
 ## Interactions
 
 | where | action |
@@ -91,7 +95,7 @@ under Settings → Plugins → Hermes Cockpit.
 ## REST (mounted at `/api/plugins/hermes-cockpit/`)
 
 `GET /health` · `GET /config` · `GET /fleet` · `GET /feed?since=&limit=` · `GET /history?minutes=` ·
-`GET /unit/{profile}` · `POST /task` (403 unless `allow_task_create`). The sensor broadcasts
+`GET /spend?range=today|week|month|30d` (estimated cost/tokens/waste, cached 30 s) · `GET /unit/{profile}` · `POST /task` (403 unless `allow_task_create`). The sensor broadcasts
 `plugin.hermes-cockpit.fleet.changed` on state transitions; the desktop half refetches on it
 and otherwise polls (default 4 s).
 

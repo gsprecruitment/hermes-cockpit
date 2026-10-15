@@ -39,7 +39,7 @@ function useAtom(a) {
 const DEFAULT_PREFS = {
   pollMs: 4000, showLanes: true, laneMinutes: 60, density: 'comfortable', particles: true,
   reducedMotion: false, demo: false, showIdle: true, laneBy: 'group', focusOnNeedsYou: true,
-  theme: 'gsp', view: 'grid', queueCollapsed: false,
+  theme: 'gsp', view: 'grid', spendRange: 'month', queueCollapsed: false,
   showKpis: null, showRail: null, showQueue: null, showFeed: null, drawerMode: 'auto', drawerW: null, queueH: null, lanesH: null, textSize: 'normal'   // null = smart default (shown); a user choice wins   // theme: 'gsp' house style | 'app' host variables; view: 'grid' | 'constellation'
 }
 const $prefs = atom(DEFAULT_PREFS)
@@ -546,6 +546,191 @@ function Swimlanes({ ctx }) {
   ] })
 }
 
+// ── spend view: estimated cost, tokens and waste (GET /spend, or a labelled demo dataset) ────
+const SPEND_RANGES = ['today', 'week', 'month', '30d']
+const RANGE_LABEL = { today: 'Today', week: 'Week', month: 'Month', '30d': '30 days' }
+const fmtUsdP = (n) => n == null ? '—' : (n > 0 && n < 0.01 ? `$${Number(n).toFixed(4)}` : `$${Number(n).toFixed(2)}`)
+const fmtPct = (x) => x == null ? '—' : `${(x * 100).toFixed(x > 0 && x < 0.1 ? 1 : 0)}%`
+const PV_CLASS = ['pv0', 'pv1', 'pv2', 'pv3', 'pv4', 'pv5']
+
+// Demo dataset: deterministic (no clock, no random), same shape as the sensor's /spend.
+const DEMO_PROVIDERS = [{ key: 'alibaba-token-plan', label: 'Alibaba Token Plan', kind: 'subscription', w: 0.46 }, { key: 'nous', label: 'Nous Portal', kind: 'metered', w: 0.3 },
+  { key: 'claude-subscription', label: 'Claude subscription', kind: 'subscription', w: 0.17 }, { key: 'anthropic', label: 'Anthropic API', kind: 'metered', w: 0.07 }]
+const DEMO_SPEND_MODELS = [['qwen-3-max', 0], ['glm-5.3-flash', 1], ['claude-fable-5-1', 2], ['deepseek-v4-flash', 1], ['claude-sonnet-5', 3]]
+function hashN(s, k) { let h = (k || 1) * 2654435761 >>> 0; for (let i = 0; i < s.length; i++) h = ((h ^ s.charCodeAt(i)) * 16777619) >>> 0; return h }
+function demoSpend(range) {
+  const base = Date.UTC(2026, 9, 14, 12) / 1000 // Wed 14 Oct 2026, fixed on purpose
+  const DAYS = 30; const days = []
+  for (let i = DAYS - 1; i >= 0; i--) {
+    const t = new Date((base - i * 86400) * 1000); const date = t.toISOString().slice(0, 10)
+    const scale = i === 0 ? 0.55 : (0.7 + (hashN(date, 3) % 60) / 100) * (t.getUTCDay() % 6 === 0 ? 0.35 : 1)
+    const by = {}; DEMO_PROVIDERS.forEach(p => { by[p.label] = +(38 * scale * p.w * (0.8 + (hashN(date + p.key, 5) % 40) / 100)).toFixed(4) })
+    const cost = +Object.values(by).reduce((a, b) => a + b, 0).toFixed(4)
+    days.push({ date, cost, tokens: Math.round(cost * 2.1e6), sessions: Math.round(cost * 2.4), by_provider: by })
+  }
+  const want = { today: 1, week: 3, month: 14, '30d': 30 }[range] || 14
+  const by_day = days.slice(-want)
+  const sum = (arr, k) => arr.reduce((a, d) => a + d[k], 0)
+  const tot = (arr) => {
+    const cost = sum(arr, 'cost'), tokens = sum(arr, 'tokens'), sessions = sum(arr, 'sessions'), tin = Math.round(tokens * 0.86), cr = Math.round(tokens * 2.4)
+    return { cost: +cost.toFixed(4), cost_actual: +(cost * 0.18).toFixed(4), actual_sessions: Math.round(sessions * 0.2), tokens, tokens_in: tin, tokens_out: tokens - tin, tokens_cache_read: cr, tokens_cache_write: Math.round(tokens * 0.2), tokens_reasoning: Math.round(tokens * 0.08), sessions, api_calls: sessions * 6, avg_cost: sessions ? +(cost / sessions).toFixed(4) : 0, waste_cost: +(cost * 0.11).toFixed(4), waste_sessions: Math.round(sessions * 0.16), waste_tokens: Math.round(tokens * 0.07), cache_share: +(cr / (tin + cr + tokens * 0.2)).toFixed(4) }
+  }
+  const totals = { today: tot(days.slice(-1)), week: tot(days.slice(-3)), month: tot(days.slice(-14)), '30d': tot(days) }
+  const sel = totals[range] || totals.month
+  const ceiling = 60
+  const pace = { ceiling_day: ceiling, set: true }
+  ;[['today', 1, 0.55], ['week', 7, 2.55], ['month', 31, 13.55]].forEach(([n, total, done]) => {
+    const c = totals[n].cost, pr = c / done * total, budget = ceiling * total
+    pace[n] = { cost: c, projected: +pr.toFixed(2), elapsed_frac: +(done / total).toFixed(3), days: total, budget, used_pct: +(c / budget).toFixed(4), projected_pct: +(pr / budget).toFixed(4), status: c > budget ? 'over' : (pr > budget ? 'risk' : 'ok') }
+  })
+  const share = (arr, f) => { const tw = arr.reduce((a, x) => a + f(x), 0) || 1; return arr.map(x => f(x) / tw) }
+  const rowOf = (extra, frac, wasteFrac) => { const cost = +(sel.cost * frac).toFixed(4); const sessions = Math.max(1, Math.round(sel.sessions * frac)); const tokens = Math.round(sel.tokens * frac); const tin = Math.round(tokens * 0.86); return { ...extra, cost, cost_actual: 0, actual_sessions: 0, tokens, tokens_in: tin, tokens_out: tokens - tin, tokens_cache_read: Math.round(tokens * 2.4), tokens_cache_write: Math.round(tokens * 0.2), tokens_reasoning: 0, sessions, api_calls: sessions * 6, avg_cost: +(cost / sessions).toFixed(4), waste_cost: +(cost * wasteFrac).toFixed(4), waste_sessions: Math.round(sessions * wasteFrac * 1.4), waste_tokens: Math.round(tokens * wasteFrac), cache_share: 0.62 } }
+  const profs = []; DEMO_GROUPS.forEach(g => g.profiles.forEach(p => profs.push({ p, g })))
+  const pw = share(profs, x => 0.2 + (hashN(x.p, 11) % 100) / 25 + (hashN(x.p, 13) % 7 === 0 ? 6 : 0))
+  const by_profile = profs.map((x, i) => rowOf({ key: x.p, profile: x.p, department: x.g.label }, pw[i], (hashN(x.p, 17) % 30) / 100)).sort((a, b) => b.cost - a.cost)
+  const deptCost = {}; by_profile.forEach(r => { deptCost[r.department] = (deptCost[r.department] || 0) + r.cost })
+  const by_department = Object.keys(deptCost).map(l => rowOf({ key: l.toLowerCase(), label: l }, deptCost[l] / (sel.cost || 1), 0.11)).sort((a, b) => b.cost - a.cost)
+  const mw = [0.34, 0.24, 0.2, 0.15, 0.07]
+  const by_model = DEMO_SPEND_MODELS.map((m, i) => rowOf({ key: m[0], model: m[0], label: m[0], provider: DEMO_PROVIDERS[m[1]].label, kind: DEMO_PROVIDERS[m[1]].kind }, mw[i], 0.09))
+  const by_provider = DEMO_PROVIDERS.map(p => rowOf({ key: p.key, label: p.label, kind: p.kind }, p.w, 0.1))
+  const by_source = [['cron', 0.41], ['kanban', 0.27], ['desktop', 0.18], ['whatsapp', 0.09], ['cli', 0.05]].map(([s, f]) => rowOf({ key: s, label: s }, f, 0.1))
+  const ex = (i, id, profile, model, title, cost, flags) => ({ id, profile, model, title, started_at: base - i * 3600, cost, tokens: Math.round(cost * 1e6), source: 'cron', end_reason: null, flags })
+  const cat = (id, label, n, cost, waste, examples) => ({ id, label, counts_as_waste: waste, count: n, tokens: Math.round(cost * 1e6), cost, examples })
+  const waste = {
+    sessions: sel.waste_sessions, tokens: sel.waste_tokens, cost: sel.waste_cost, cost_pct: sel.cost ? +(sel.waste_cost / sel.cost).toFixed(4) : 0, sessions_pct: sel.sessions ? +(sel.waste_sessions / sel.sessions).toFixed(4) : 0,
+    categories: [
+      cat('zero_output', 'Zero output tokens', 14, +(sel.waste_cost * 0.34).toFixed(4), true, [ex(2, 'demo_a1', 'sourcer-cpp', 'qwen-3-max', 'Source embedded engineers', 0.42, ['zero_output']), ex(5, 'demo_a2', 'screener', 'glm-5.3-flash', 'Screen new CVs', 0.18, ['zero_output'])]),
+      cat('single_message', 'One message or fewer', 22, +(sel.waste_cost * 0.2).toFixed(4), true, [ex(3, 'demo_b1', 'outreach', 'claude-fable-5-1', 'Draft outreach batch', 0.31, ['single_message'])]),
+      cat('error_end', 'Ended with an error or refusal', 6, +(sel.waste_cost * 0.3).toFixed(4), true, [ex(7, 'demo_c1', 'kpi-reporter', 'qwen-3-max', 'Weekly KPI sheet', 0.77, ['error_end'])]),
+      cat('orphaned', 'Reaped as orphan (session left open, not necessarily wasted)', 9, +(sel.waste_cost * 0.16).toFixed(4), false, [ex(9, 'demo_d1', 'backoffice', 'glm-5.3-flash', 'Reconcile invoices', 0.12, ['orphaned'])]),
+      cat('unpriced', 'Cost status unknown / unpriced', 120, 0, false, [ex(1, 'demo_e1', 'lead-finder', 'qwen-3-max', 'Update CRM contacts', 0, ['unpriced'])])
+    ]
+  }
+  return {
+    demo: true, range, ts: base, window: { start: base - want * 86400, end: base }, totals, selected: sel, by_profile, by_department, by_model, by_provider, by_source, by_day, providers: DEMO_PROVIDERS.map(p => p.label),
+    cards: [{ board: 'demo', task_id: 'T412', title: 'Approve outreach batch Q4', assignee: 'agent:outreach', status: 'blocked', cost: +(sel.cost * 0.05).toFixed(4), tokens: Math.round(sel.tokens * 0.05), sessions: 2, runs: 2, method: 'session_id' },
+      { board: 'demo', task_id: 'T377', title: 'Source ten C++ engineers', assignee: 'agent:sourcer-cpp', status: 'done', cost: +(sel.cost * 0.03).toFixed(4), tokens: Math.round(sel.tokens * 0.03), sessions: 1, runs: 1, method: 'window' }],
+    missing: [], waste, cache: { read_tokens: sel.tokens_cache_read, write_tokens: sel.tokens_cache_write, input_tokens: sel.tokens_in, share: sel.cache_share }, pace, model_source: 'session_model_usage',
+    data_notes: ['Demo numbers: invented, deterministic, not from your install.', 'Costs are estimates at API list prices, not invoices.', 'Subscription plans have no per-token price.']
+  }
+}
+
+function SpendTable({ cols, rows, onRow, label, empty, limit }) {
+  const [sort, setSort] = useState({ k: cols[1] ? cols[1].k : cols[0].k, dir: -1 }); const [all, setAll] = useState(false)
+  const sorted = useMemo(() => rows.slice().sort((a, b) => { const x = a[sort.k], y = b[sort.k]; return (typeof x === 'string' || typeof y === 'string' ? String(x || '').localeCompare(String(y || '')) : (x || 0) - (y || 0)) * sort.dir }), [rows, sort])
+  const lim = limit || 8; const shown = all ? sorted : sorted.slice(0, lim)
+  if (!rows.length) return jsx('div', { className: 'ck-sp-empty', children: empty || 'No data in this range.' })
+  return jsxs('div', { className: 'ck-sp-tw', children: [
+    jsxs('table', { className: 'ck-sp-t', 'aria-label': label, children: [
+      jsx('thead', { children: jsx('tr', { children: cols.map(c => jsxk('th', { key: c.k, className: c.num ? 'num' : '', style: c.w ? { width: c.w } : undefined, 'aria-sort': sort.k === c.k ? (sort.dir < 0 ? 'descending' : 'ascending') : 'none',
+        children: jsx('button', { type: 'button', title: `Sort by ${c.label}`, onClick: () => setSort(s => ({ k: c.k, dir: s.k === c.k ? -s.dir : (c.num ? -1 : 1) })), children: c.label + (sort.k === c.k ? (sort.dir < 0 ? ' ↓' : ' ↑') : '') }) })) }) }),
+      jsx('tbody', { children: shown.map((r, i) => jsxk('tr', { key: String(r.key || r.id || i), className: onRow ? 'click' : '', tabIndex: onRow ? 0 : undefined, onClick: onRow ? () => onRow(r) : undefined, onKeyDown: onRow ? (e) => { if (e.key === 'Enter') onRow(r) } : undefined,
+        children: cols.map(c => jsxk('td', { key: c.k, className: c.num ? 'num' : '', title: typeof r[c.k] === 'string' ? r[c.k] : undefined, children: c.fmt ? c.fmt(r[c.k], r) : (r[c.k] == null ? '—' : String(r[c.k])) })) })) })
+    ] }),
+    rows.length > lim && jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => setAll(!all), children: all ? 'Show fewer' : `Show all ${rows.length}` })
+  ] })
+}
+
+function SpendBars({ days, providers }) {
+  const n = days.length; const max = Math.max(0.0001, ...days.map(d => d.cost)); const W = 600, H = 110, gap = n > 20 ? 1 : 3, bw = Math.max(2, (W - gap * (n - 1)) / Math.max(1, n))
+  const idx = (l) => Math.max(0, providers.indexOf(l))
+  return jsxs('div', { className: 'ck-sp-chart', children: [
+    jsxs('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': `Daily estimated cost, ${n} days, peak ${fmtUsdP(max)}`, children: [
+      jsx('line', { x1: 0, x2: W, y1: H - 0.5, y2: H - 0.5, className: 'ck-sp-axis' }),
+      ...days.map((d, i) => {
+        let y = H; const x = i * (bw + gap)
+        const segs = Object.entries(d.by_provider || {}).sort((a, b) => idx(a[0]) - idx(b[0])).map(([l, v]) => { const h = v / max * (H - 4); y -= h; return jsxk('rect', { key: l, x, y, width: bw, height: Math.max(0, h), className: 'ck-sp-' + PV_CLASS[idx(l) % PV_CLASS.length] }) })
+        return jsxsk('g', { key: d.date, children: [jsx('title', { children: `${d.date}: ${fmtUsdP(d.cost)} · ${fmtTok(d.tokens)} tok · ${d.sessions} sessions` }), ...(segs.length ? segs : [jsx('rect', { x, y: H - 1, width: bw, height: 1, className: 'ck-sp-pv5' })])] })
+      })
+    ] }),
+    jsxs('div', { className: 'ck-sp-axl', children: [jsx('span', { children: days[0] ? days[0].date.slice(5) : '' }), jsx('span', { children: `peak ${fmtUsdP(max)}` }), jsx('span', { children: days[n - 1] ? days[n - 1].date.slice(5) : '' })] }),
+    jsx('div', { className: 'ck-sp-leg', children: providers.map((l, i) => jsxsk('span', { key: l, children: [jsx('i', { className: 'ck-sp-' + PV_CLASS[i % PV_CLASS.length] }), l] })) })
+  ] })
+}
+
+function SpendKpi({ label, value, sub, pace, tone }) {
+  const over = pace && pace.status === 'over'
+  return jsxs('div', { className: cx('ck-sp-kpi', tone), children: [jsx('span', { className: 'l', children: label }), jsx('b', { children: value }), sub ? jsx('em', { children: sub }) : null,
+    pace && pace.budget ? jsx('div', { className: cx('ck-gauge', over && 'over'), role: 'img', 'aria-label': `${fmtPct(pace.used_pct)} of ${fmtUsd(pace.budget)} budget`, children: jsx('i', { style: { width: `${Math.min(100, Math.round(pace.used_pct * 100))}%` } }) }) : null,
+    pace && pace.budget ? jsx('small', { children: `${fmtPct(pace.used_pct)} of ${fmtUsd(pace.budget)} · pace ${fmtUsd(pace.projected)}${pace.status === 'risk' ? ' ▲' : ''}` }) : null] })
+}
+
+function WasteList({ waste }) {
+  const [open, setOpen] = useState(null)
+  return jsx('div', { className: 'ck-sp-waste', children: waste.categories.map(c => jsxsk('div', { key: c.id, className: cx('wc', !c.counts_as_waste && 'soft'), children: [
+    jsxs('button', { type: 'button', className: 'wh', 'aria-expanded': open === c.id, disabled: !c.count, onClick: () => setOpen(open === c.id ? null : c.id), children: [jsx('span', { className: 'caret', children: open === c.id ? '▾' : '▸' }), jsx('span', { className: 'tx', children: c.label + (c.counts_as_waste ? '' : ' (not counted)') }), jsx('span', { className: 'num', children: c.count }), jsx('span', { className: 'num', children: fmtTok(c.tokens) }), jsx('span', { className: 'num', children: fmtUsdP(c.cost) })] }),
+    open === c.id && jsx('ul', { children: c.examples.map(e => jsxk('li', { key: e.id, children: jsxs('button', { type: 'button', className: 'ex', title: `${e.id} · ${e.model || ''}`, onClick: () => $selected.set(e.profile), children: [jsx('span', { className: 'tx', children: `${e.profile} · ${cleanTitle(e.title || e.id)}` }), jsx('span', { className: 'num', children: fmtUsdP(e.cost) })] }) })) })
+  ] })) })
+}
+
+function SpendView({ ctx }) {
+  const prefs = useAtom($prefs); const mode = useAtom($mode)
+  const range = SPEND_RANGES.includes(prefs.spendRange) ? prefs.spendRange : 'month'
+  const demo = mode !== 'live'
+  const [st, setSt] = useState({ data: null, err: null, loading: true })
+  useEffect(() => {
+    let dead = false
+    const load = async () => {
+      if (demo) { setSt({ data: demoSpend(range), err: null, loading: false }); return }
+      try {
+        const d = await ctx.rest(`/spend?range=${range}`)
+        if (dead) return
+        if (!d || d.error || !d.totals) throw new Error((d && d.error) || 'the sensor returned no spend data')
+        setSt({ data: d, err: null, loading: false })
+      } catch (e) { if (!dead) setSt(s => ({ ...s, err: String((e && e.message) || e), loading: false })) }
+    }
+    setSt(s => ({ ...s, loading: true })); load()
+    const off = demo ? null : ctx.setInterval(load, 30000)
+    return () => { dead = true; if (typeof off === 'function') off() }
+  }, [range, demo])
+  const d = st.data
+  const ceiling = d && d.pace && d.pace.ceiling_day
+  const select = (p) => { const name = String(p || '').replace(/^agent:/, ''); if (name) $selected.set(name) }
+  const head = jsxs('div', { className: 'ck-sp-head', children: [
+    jsx('h2', { children: 'Spend' }),
+    jsx('span', { className: 'ck-sp-disc', role: 'note', children: 'Estimated at API prices — not an invoice' }),
+    demo && jsx('span', { className: 'ck-sp-demo', children: 'DEMO DATA' }),
+    st.loading && jsx('span', { className: 'ck-sp-load', 'aria-live': 'polite', children: 'loading…' }),
+    jsx('span', { className: 'ck-sp-sp' }),
+    jsx('span', { className: 'ck-vt', role: 'group', 'aria-label': 'Spend range', children: SPEND_RANGES.map(r => jsxk('button', { key: r, type: 'button', className: cx('ck-btn sm', range === r && 'on'), 'aria-pressed': range === r, onClick: () => setPrefs(ctx, { spendRange: r }), children: RANGE_LABEL[r] })) })
+  ] })
+  if (!d) return jsxs('div', { className: 'ck-scroll ck-spend', children: [head, st.err ? jsx('div', { className: 'ck-note', role: 'alert', children: `Spend unavailable: ${st.err}` }) : jsx('div', { className: 'ck-sp-empty', children: 'Loading spend…' })] })
+  const T = d.totals; const sel = d.selected || T[range]; const pace = d.pace || {}
+  const wasteCost = d.waste ? d.waste.cost : 0
+  const money = { k: 'cost', label: 'Cost', num: true, fmt: fmtUsdP, w: '17%' }
+  const tokc = { k: 'tokens', label: 'Tokens', num: true, fmt: fmtTok, w: '16%' }
+  const sess = { k: 'sessions', label: 'Sess', num: true, w: '12%' }
+  const wasteC = { k: 'waste_cost', label: 'Waste', num: true, fmt: fmtUsdP, w: '14%' }
+  const colsProfile = [{ k: 'profile', label: 'Profile' }, money, tokc, sess, { k: 'avg_cost', label: 'Avg', num: true, fmt: fmtUsdP, w: '14%' }, wasteC]
+  return jsxs('div', { className: 'ck-scroll ck-spend', children: [
+    head,
+    st.err && jsx('div', { className: 'ck-note', role: 'alert', children: `Refresh failed (${st.err}); showing the last data.` }),
+    jsxs('div', { className: 'ck-sp-kpis', children: [
+      jsx(SpendKpi, { label: 'Today', value: fmtUsdP(T.today.cost), pace: pace.today, sub: `${T.today.sessions} sess` }),
+      jsx(SpendKpi, { label: 'Week', value: fmtUsdP(T.week.cost), pace: pace.week, sub: `${T.week.sessions} sess` }),
+      jsx(SpendKpi, { label: 'Month', value: fmtUsdP(T.month.cost), pace: pace.month, sub: `${T.month.sessions} sess` }),
+      jsx(SpendKpi, { label: `Tokens · ${RANGE_LABEL[range].toLowerCase()}`, value: fmtTok(sel.tokens), sub: `in ${fmtTok(sel.tokens_in)} · out ${fmtTok(sel.tokens_out)}` }),
+      jsx(SpendKpi, { label: 'Sessions', value: String(sel.sessions), sub: `${sel.api_calls} api calls` }),
+      jsx(SpendKpi, { label: 'Cache share', value: fmtPct(sel.cache_share), sub: `read ${fmtTok(sel.tokens_cache_read)}` }),
+      jsx(SpendKpi, { label: 'Waste', value: fmtUsdP(wasteCost), tone: d.waste && d.waste.cost_pct > 0.2 ? 'warn' : '', sub: d.waste ? `${fmtPct(d.waste.cost_pct)} of spend · ${d.waste.sessions} sess` : '' })
+    ] }),
+    !ceiling && jsx('div', { className: 'ck-note', children: 'No spend_ceiling_usd in cockpit.yaml, so no pace gauge.' }),
+    jsxs('div', { className: 'ck-sp-grid', children: [
+      jsxs('section', { className: 'ck-sp-panel wide', 'aria-label': 'Cost per day', children: [jsx('h3', { children: `Cost per day · ${RANGE_LABEL[range].toLowerCase()} · ${fmtUsdP(sel.cost)}` }), jsx(SpendBars, { days: d.by_day || [], providers: d.providers || [] })] }),
+      jsxs('section', { className: 'ck-sp-panel', 'aria-label': 'By profile', children: [jsx('h3', { children: 'By profile' }), jsx(SpendTable, { label: 'Spend by profile', cols: colsProfile, rows: d.by_profile || [], onRow: (r) => select(r.profile), limit: 8 })] }),
+      jsxs('section', { className: 'ck-sp-panel', 'aria-label': 'By department', children: [jsx('h3', { children: 'By department' }), jsx(SpendTable, { label: 'Spend by department', cols: [{ k: 'label', label: 'Department' }, money, tokc, sess, wasteC], rows: d.by_department || [], limit: 10 })] }),
+      jsxs('section', { className: 'ck-sp-panel', 'aria-label': 'By provider', children: [jsx('h3', { children: 'By provider' }), jsx(SpendTable, { label: 'Spend by provider', cols: [{ k: 'label', label: 'Provider' }, { k: 'kind', label: 'Plan', w: '21%' }, money, tokc, sess], rows: d.by_provider || [] }), jsx('p', { className: 'ck-sp-fine', children: 'Subscription plans have no per-token price: their cost here is an API-price equivalent, or missing.' })] }),
+      jsxs('section', { className: 'ck-sp-panel', 'aria-label': 'By model', children: [jsx('h3', { children: 'By model' }), jsx(SpendTable, { label: 'Spend by model', cols: [{ k: 'label', label: 'Model' }, { k: 'provider', label: 'Provider', w: '22%' }, money, tokc, sess], rows: d.by_model || [], limit: 8 })] }),
+      jsxs('section', { className: 'ck-sp-panel', 'aria-label': 'By source', children: [jsx('h3', { children: 'By source' }), jsx(SpendTable, { label: 'Spend by source', cols: [{ k: 'label', label: 'Source' }, money, tokc, sess], rows: d.by_source || [] })] }),
+      jsxs('section', { className: 'ck-sp-panel', 'aria-label': 'Top cards', children: [jsx('h3', { children: 'Top cards and runs' }),
+        (d.cards || []).length ? jsx(SpendTable, { label: 'Spend by card', cols: [{ k: 'title', label: 'Card' }, { k: 'assignee', label: 'Unit', w: '20%', fmt: (v) => String(v || '').replace(/^agent:/, '') }, money, tokc, { k: 'method', label: 'Link', w: '13%' }], rows: (d.cards || []).map(c => ({ ...c, key: c.board + c.task_id })), onRow: (r) => select(r.assignee), limit: 6 })
+          : jsx('div', { className: 'ck-sp-empty', children: (d.missing && d.missing.length ? d.missing : ['No cards could be attributed to spend.']).join(' ') })] }),
+      jsxs('section', { className: 'ck-sp-panel', 'aria-label': 'Waste', children: [jsx('h3', { children: `Waste · ${fmtUsdP(wasteCost)} · ${d.waste ? fmtPct(d.waste.cost_pct) : '—'} of spend` }), d.waste && jsx(WasteList, { waste: d.waste })] })
+    ] }),
+    jsxs('details', { className: 'ck-sp-notes', children: [jsx('summary', { children: `Data notes (${(d.data_notes || []).length})` }), jsx('ul', { children: (d.data_notes || []).map((n, i) => jsxk('li', { key: i, children: n })) })] })
+  ] })
+}
+
 // ── house style: one injected stylesheet; palette lives in CSS custom properties ─────────
 // theme 'gsp' = navy/gold house style; theme 'app' maps the same names onto the app's --ui-* variables.
 const CK_RAW = `
@@ -720,6 +905,53 @@ const CK_RAW = `
 .ck-lay .ck-row{margin:2px 0;}
 .ck-lay select{background:var(--ck-bg);color:var(--ck-text);border:1px solid var(--ck-line);border-radius:3px;padding:2px 4px;font-size:12px;}
 .ck-bar{position:relative;}
+.ck-spend{padding:8px 12px 16px;}
+.ck-sp-head{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;margin-bottom:8px;}
+.ck-sp-head h2{margin:0;font:600 17px var(--ck-serif);}
+.ck-sp-disc{font:600 11px var(--ck-sans);color:var(--ck-accent);border:1px solid var(--ck-accent);border-radius:3px;padding:1px 7px;}
+.ck-sp-demo{font:600 10px var(--ck-mono);letter-spacing:.1em;background:var(--ck-accent);color:var(--ck-on-accent);border-radius:3px;padding:1px 6px;}
+.ck-sp-load{font-size:11px;color:var(--ck-muted);}
+.ck-sp-sp{flex:1;}
+.ck-sp-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:6px;margin-bottom:8px;}
+.ck-sp-kpi{min-width:0;padding:6px 8px;background:var(--ck-surface);border:1px solid var(--ck-line);border-radius:3px;display:flex;flex-direction:column;gap:1px;}
+.ck-sp-kpi .l{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ck-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.ck-sp-kpi b{font:600 18px/1.15 var(--ck-mono);font-variant-numeric:tabular-nums;}
+.ck-sp-kpi.warn b{color:var(--ck-accent);}
+.ck-sp-kpi em,.ck-sp-kpi small{font:10px var(--ck-mono);font-style:normal;color:var(--ck-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ck-sp-kpi .ck-gauge{margin:3px 0 1px;}
+.ck-sp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:8px;align-items:start;}
+.ck-sp-panel{min-width:0;overflow:hidden;padding:8px 10px;background:var(--ck-surface);border:1px solid var(--ck-line);border-radius:3px;}
+.ck-sp-panel.wide{grid-column:1/-1;}
+.ck-sp-panel h3{margin:0 0 6px;font:600 11px var(--ck-sans);letter-spacing:.08em;text-transform:uppercase;color:var(--ck-accent);}
+.ck-sp-tw{display:flex;flex-direction:column;gap:6px;align-items:flex-start;min-width:0;width:100%;}
+.ck-sp-t{width:100%;table-layout:fixed;border-collapse:collapse;font-size:11px;}
+.ck-sp-t th,.ck-sp-t td{padding:2px 4px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-bottom:1px solid var(--ck-line);}
+.ck-sp-t th button{all:unset;cursor:pointer;font:600 10px var(--ck-sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ck-muted);}
+.ck-sp-t th button:focus-visible{outline:2px solid var(--ck-accent);}
+.ck-sp-t .num{text-align:right;font-family:var(--ck-mono);font-variant-numeric:tabular-nums;}
+.ck-sp-t tr.click{cursor:pointer;} .ck-sp-t tr.click:hover td{background:var(--ck-line);}
+.ck-sp-empty{padding:6px 2px;font-size:11px;color:var(--ck-muted);}
+.ck-sp-fine{margin:6px 0 0;font-size:10px;color:var(--ck-muted);}
+.ck-sp-chart svg{display:block;width:100%;height:110px;}
+.ck-sp-axis{stroke:var(--ck-line);stroke-width:1;}
+.ck-sp-axl{display:flex;justify-content:space-between;font:10px var(--ck-mono);color:var(--ck-muted);margin-top:2px;}
+.ck-sp-leg{display:flex;flex-wrap:wrap;gap:2px 12px;margin-top:4px;font-size:10px;color:var(--ck-muted);}
+.ck-sp-leg i{display:inline-block;width:8px;height:8px;margin-right:4px;border-radius:1px;}
+.ck-sp-pv0{fill:var(--ck-accent);background:var(--ck-accent);}
+.ck-sp-pv1{fill:var(--ck-s-working);background:var(--ck-s-working);}
+.ck-sp-pv2{fill:var(--ck-s-task);background:var(--ck-s-task);}
+.ck-sp-pv3{fill:var(--ck-s-idle);background:var(--ck-s-idle);}
+.ck-sp-pv4{fill:var(--ck-s-failed);background:var(--ck-s-failed);}
+.ck-sp-pv5{fill:var(--ck-s-off);background:var(--ck-s-off);}
+.ck-sp-waste .wh{all:unset;box-sizing:border-box;display:grid;grid-template-columns:14px 1fr 34px 52px 62px;gap:4px;align-items:baseline;width:100%;padding:2px 0;font-size:11px;cursor:pointer;border-bottom:1px solid var(--ck-line);}
+.ck-sp-waste .wh:disabled{cursor:default;opacity:.5;} .ck-sp-waste .wh:focus-visible{outline:2px solid var(--ck-accent);}
+.ck-sp-waste .tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+.ck-sp-waste .num{text-align:right;font-family:var(--ck-mono);font-variant-numeric:tabular-nums;}
+.ck-sp-waste .soft .tx{color:var(--ck-muted);}
+.ck-sp-waste ul{list-style:none;margin:0;padding:0 0 4px 14px;}
+.ck-sp-waste .ex{all:unset;box-sizing:border-box;display:flex;justify-content:space-between;gap:8px;width:100%;padding:1px 0;font-size:11px;cursor:pointer;color:var(--ck-muted);}
+.ck-sp-waste .ex:hover{color:var(--ck-accent);} .ck-sp-waste .ex:focus-visible{outline:2px solid var(--ck-accent);}
+.ck-sp-notes{margin-top:8px;font-size:11px;color:var(--ck-muted);} .ck-sp-notes summary{cursor:pointer;} .ck-sp-notes ul{margin:4px 0 0;padding-left:16px;}
 @media (prefers-reduced-motion:reduce){.hermes-cockpit *{transition:none !important;animation:none !important;}}
 `
 
@@ -790,7 +1022,7 @@ function LayoutMenu({ ctx }) {
     sec('showFeed', 'Feed'),
     jsxs('label', { children: ['Drawer', jsx('select', { 'aria-label': 'Drawer placement', value: prefs.drawerMode, onChange: (e) => setPrefs(ctx, { drawerMode: e.target.value }), children: [['auto', 'Auto'], ['overlay', 'Always slide-over'], ['side', 'Always side column']].map(([v, l]) => jsxk('option', { key: v, value: v, children: l })) })] }),
     jsxs('div', { className: 'ck-row', role: 'group', 'aria-label': 'Text size', children: ['Text', ...['compact', 'normal', 'large'].map(z => jsxk('button', { key: z, type: 'button', className: cx('ck-btn sm', prefs.textSize === z && 'on'), 'aria-pressed': prefs.textSize === z, onClick: () => setPrefs(ctx, { textSize: z }), children: z }))] }),
-    jsxs('div', { className: 'ck-row', role: 'group', 'aria-label': 'View', children: ['View', ...[['grid', 'Grid'], ['constellation', 'Orbit']].map(([v, l]) => jsxk('button', { key: v, type: 'button', className: cx('ck-btn sm', prefs.view === v && 'on'), 'aria-pressed': prefs.view === v, onClick: () => setPrefs(ctx, { view: v }), children: l })), jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => { $tab.set('feed'); $feedOpen.set(true) }, children: 'Open feed' })] }),
+    jsxs('div', { className: 'ck-row', role: 'group', 'aria-label': 'View', children: ['View', ...[['grid', 'Grid'], ['constellation', 'Orbit'], ['spend', 'Spend']].map(([v, l]) => jsxk('button', { key: v, type: 'button', className: cx('ck-btn sm', (v === 'grid' ? isGridView(prefs) : prefs.view === v) && 'on'), 'aria-pressed': v === 'grid' ? isGridView(prefs) : prefs.view === v, onClick: () => setPrefs(ctx, { view: v }), children: l })), jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => { $tab.set('feed'); $feedOpen.set(true) }, children: 'Open feed' })] }),
     jsx('button', { type: 'button', className: 'ck-btn sm', onClick: () => resetLayout(ctx), children: 'Reset layout' })
   ] })
 }
@@ -865,8 +1097,9 @@ function GroupRail({ ctx }) {
       !short && jsx('input', { className: 'ck-input', 'aria-label': 'Find unit or task id', placeholder: 'Find unit or task id', 'data-ck-search': '1', value: filter.q, onChange: (e) => $filter.set({ ...filter, q: e.target.value }) }),
       short && jsx('button', { type: 'button', className: cx('ck-btn sm', filter.q && 'on'), 'aria-label': 'Find unit or task id', title: 'Find unit or task id', onClick: () => $searchOpen.set(true), children: '🔍' }),
       jsxs('span', { className: 'ck-vt', role: 'group', 'aria-label': 'View', children: [
-        jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view !== 'constellation' && 'on'), 'aria-pressed': prefs.view !== 'constellation', onClick: () => setPrefs(ctx, { view: 'grid' }), children: 'Grid' }),
-        jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view === 'constellation' && 'on'), 'aria-pressed': prefs.view === 'constellation', onClick: () => setPrefs(ctx, { view: 'constellation' }), children: 'Orbit' })
+        jsx('button', { type: 'button', className: cx('ck-btn sm', isGridView(prefs) && 'on'), 'aria-pressed': isGridView(prefs), onClick: () => setPrefs(ctx, { view: 'grid' }), children: 'Grid' }),
+        jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view === 'constellation' && 'on'), 'aria-pressed': prefs.view === 'constellation', onClick: () => setPrefs(ctx, { view: 'constellation' }), children: 'Orbit' }),
+        jsx('button', { type: 'button', className: cx('ck-btn sm', prefs.view === 'spend' && 'on'), 'aria-pressed': prefs.view === 'spend', onClick: () => setPrefs(ctx, { view: 'spend' }), children: 'Spend' })
       ] }),
       (!drawerSide(prefs, dim) && isOn(prefs, 'showFeed')) && jsx('button', { type: 'button', className: cx('ck-btn sm', feedOpen && 'on'), 'aria-pressed': feedOpen, title: 'Event feed', onClick: () => { $tab.set('feed'); $feedOpen.set(!feedOpen) }, children: 'Feed' })
     ] })
@@ -1033,6 +1266,7 @@ function Feed() {
 // Layout switches (null = smart default, which is "shown"); Reset puts every one back.
 const LAYOUT_DEFAULTS = { showKpis: null, showRail: null, showQueue: null, showFeed: null, drawerMode: 'auto', drawerW: null, queueH: null, lanesH: null, textSize: 'normal' }
 const isOn = (p, k) => p[k] !== false
+const isGridView = (p) => p.view !== 'constellation' && p.view !== 'spend'
 const TEXT_Z = { compact: 0.9, normal: 1, large: 1.15 }
 const drawerSide = (p, dim) => p.drawerMode === 'side' || (p.drawerMode !== 'overlay' && dim.size === 'wide')
 function resetLayout(ctx) {
@@ -1070,8 +1304,8 @@ function Page({ ctx }) {
     mode === 'rpc' && jsx('div', { className: 'ck-note', children: 'RPC-only picture: sessions per profile, no board/cost. The sensor half is not reachable at /api/plugins/hermes-cockpit — add `hermes-cockpit` to plugins.enabled on the backend, and check its dashboard/manifest.json `name` equals `hermes-cockpit` (the API mounts under /api/plugins/<manifest name>/).' }),
     isOn(prefs, 'showQueue') && jsx(NeedsQueue, { ctx }),
     jsxs('div', { className: 'ck-body', children: [
-      jsxs('div', { className: 'ck-main', children: [prefs.view === 'constellation' ? jsx(Constellation, { ctx }) : jsx('div', { className: 'ck-scroll', children: jsx(UnitGrid, {}) }), !dim.short && prefs.showLanes && jsx(Swimlanes, { ctx }),
-        dim.short && lanesOpen && jsxs('div', { className: 'ck-lanes-over', style: { maxHeight: prefs.lanesH ? '80%' : '40%' }, children: [jsx('button', { type: 'button', className: 'ck-btn sm', 'aria-label': 'Close swimlanes', onClick: () => $lanesOpen.set(false), children: '×' }), jsx(Swimlanes, { ctx })] })] }),
+      jsxs('div', { className: 'ck-main', children: [prefs.view === 'constellation' ? jsx(Constellation, { ctx }) : (prefs.view === 'spend' ? jsx(SpendView, { ctx }) : jsx('div', { className: 'ck-scroll', children: jsx(UnitGrid, {}) })), !dim.short && prefs.view !== 'spend' && prefs.showLanes && jsx(Swimlanes, { ctx }),
+        dim.short && lanesOpen && prefs.view !== 'spend' && jsxs('div', { className: 'ck-lanes-over', style: { maxHeight: prefs.lanesH ? '80%' : '40%' }, children: [jsx('button', { type: 'button', className: 'ck-btn sm', 'aria-label': 'Close swimlanes', onClick: () => $lanesOpen.set(false), children: '×' }), jsx(Swimlanes, { ctx })] })] }),
       side && jsxs('div', { className: 'ck-side', style: { width: dw || 320 }, children: [jsx(Handle, liveHandle(ctx, 'drawerW', { axis: 'x', sign: -1, value: dw || 320, min: 260, max: 560, label: 'Drawer width', cls: 'v' })), jsx(Drawer, { ctx }), showFeed && jsx(Feed, {})] }),
       over && jsxs('div', { className: 'ck-over', role: 'dialog', 'aria-label': 'Unit and feed', style: dw ? { width: `min(${dw}px, 90%)` } : undefined, children: [
         jsx(Handle, liveHandle(ctx, 'drawerW', { axis: 'x', sign: -1, value: dw || 380, min: 260, max: 560, label: 'Drawer width', cls: 'v' })),
@@ -1115,7 +1349,7 @@ function Settings({ ctx }) {
   const Sel = (k, opts) => jsx('select', { value: p[k], style: S.input, onChange: e => setPrefs(ctx, { [k]: e.target.value }), children: opts.map(o => jsxk('option', { key: o, value: o, children: o })) })
   return jsxs('div', { style: { padding: '4px 0', maxWidth: 640 }, children: [
     Row('Theme', Sel('theme', ['gsp', 'app']), 'gsp: GSP house style (navy, gold). app: the host app\'s own theme variables.'),
-    Row('Main view', Sel('view', ['grid', 'constellation']), 'Grid: one column per group. Constellation: the canvas map.'),
+    Row('Main view', Sel('view', ['grid', 'constellation', 'spend']), 'Grid: one column per group. Constellation: the canvas map.'),
     Row('Key figures in the mission bar', Tri('showKpis')), Row('Department rail', Tri('showRail')), Row('Needs-you strip / cards', Tri('showQueue')), Row('Feed', Tri('showFeed')),
     Row('Drawer placement', Sel('drawerMode', ['auto', 'overlay', 'side']), 'auto: side column when the page is 1400px wide or more, slide-over otherwise.'),
     Row('Text size', Sel('textSize', ['compact', 'normal', 'large']), 'Scales the cockpit\'s own text, to counter the app zoom.'),
@@ -1166,4 +1400,4 @@ export default {
 }
 
 // Exposed for tests only (not part of the plugin contract).
-export const __test = { LAYOUT_DEFAULTS, SHORT_CHROME, $queueOpen, $lanesOpen, $searchOpen, chooseLayout, $dim, $feedOpen, orbitLabels, cleanTitle, atom, layout, totalsOf, demoSnap, diffToFeed, fmtAge, fmtTok, $snap, $feed, $history, $mode, $prefs, $selected, $filter, $replayT, STATES }
+export const __test = { demoSpend, SPEND_RANGES, fmtUsdP, LAYOUT_DEFAULTS, SHORT_CHROME, $queueOpen, $lanesOpen, $searchOpen, chooseLayout, $dim, $feedOpen, orbitLabels, cleanTitle, atom, layout, totalsOf, demoSnap, diffToFeed, fmtAge, fmtTok, $snap, $feed, $history, $mode, $prefs, $selected, $filter, $replayT, STATES }

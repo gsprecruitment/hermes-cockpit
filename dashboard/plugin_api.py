@@ -71,6 +71,11 @@ def history(minutes: int = Query(60, ge=1, le=24 * 60)) -> dict[str, Any]:
     return {"points": get_sensor().history(minutes=minutes)}
 
 
+@router.get("/spend")
+def spend(range: str = Query("month", pattern="^(today|week|month|30d)$")) -> dict[str, Any]:
+    return get_sensor().spend(range)
+
+
 @router.get("/unit/{profile}")
 def unit(profile: str) -> dict[str, Any]:
     d = get_sensor().unit_detail(profile)
