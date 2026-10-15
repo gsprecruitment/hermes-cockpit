@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import sources
+from . import sources, spend as spend_mod
 from .config import CockpitConfig, hermes_home, load_config
 
 log = logging.getLogger("cockpit.sensor")
@@ -85,6 +85,7 @@ class Sensor:
         self._config_mtime: float | None = self._config_stat()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._spend_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     # ── lifecycle ────────────────────────────────────────────────────────────────────────
 
@@ -281,6 +282,22 @@ class Sensor:
         entry = dict(extra or {})
         entry.update({"seq": self._feed_seq, "ts": now or time.time(), "kind": kind, "profile": profile, "text": text})
         self._feed.append(entry)
+
+    def spend(self, range_name: str = "month", ttl: float = 30.0, now: float | None = None) -> dict[str, Any]:
+        """Spend insights, cached ``ttl`` seconds per range (the aggregation scans every profile's sessions)."""
+        t = time.time()
+        with self._lock:
+            hit = self._spend_cache.get(range_name)
+            if hit and now is None and t - hit[0] < ttl:
+                return hit[1]
+        try:
+            data = spend_mod.compute(self.home, self.config, range_name, now=now)
+        except Exception as exc:  # never a dead panel
+            log.warning("spend failed: %s", exc)
+            data = {"error": f"{type(exc).__name__}: {exc}", "range": range_name, "data_notes": ["Spend could not be computed."]}
+        with self._lock:
+            self._spend_cache[range_name] = (t, data)
+        return data
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

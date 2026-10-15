@@ -72,7 +72,7 @@ const ctx = {
   addEventListener: (t, type, fn, o) => { t.addEventListener(type, fn, o); return () => t.removeEventListener(type, fn, o) },
   onDispose: (fn) => disposers.push(fn), register: (c) => { contribs.push(c); return () => {} }, registerMany: (cs) => { cs.forEach(c => contribs.push(c)); return () => {} },
   registerSettingsPage: (p) => { settingsPage = p; return () => {} },
-  rest: async (p, o) => { log.requests.push(['rest', p, o && o.method]); if (restMode === 'unauthorized') { const e = new Error('401: {"error":"unauthenticated","reason":"no_cookie"}'); e.status = 401; throw e } if (restMode === 'fail') { const e = new Error('404: Plugin not found'); e.status = 404; throw e } if (p === '/fleet') return LIVE; if (p.startsWith('/feed')) return { items: /since=0\b/.test(p) ? [{ seq: 1, ts: LIVE.ts, kind: 'state', profile: 'chief', text: 'chief: idle → working' }] : [] }; if (p.startsWith('/history')) return { points: [{ ts: LIVE.ts - 600, states: { chief: 'working', sourcer: 'task' }, tpm: { chief: 1200 } }, { ts: LIVE.ts, states: { chief: 'working', sourcer: 'blocked' }, tpm: {} }] }; if (p.startsWith('/unit/')) return { ...LIVE.units.chief, recent_tool_calls: [{ tool: 'read_file', target: '/x' }], recent_sessions: [{ id: 's1', title: 'A', tokens: 10, estimated_cost_usd: 0.1 }, { id: 's2', title: 'B', tokens: 5, estimated_cost_usd: 0.05 }] }; if (p === '/task') return { ok: true, task_id: 'T9' }; throw new Error('404') },
+  rest: async (p, o) => { log.requests.push(['rest', p, o && o.method]); if (restMode === 'unauthorized') { const e = new Error('401: {"error":"unauthenticated","reason":"no_cookie"}'); e.status = 401; throw e } if (restMode === 'fail') { const e = new Error('404: Plugin not found'); e.status = 404; throw e } if (p === '/fleet') return LIVE; if (p.startsWith('/feed')) return { items: /since=0\b/.test(p) ? [{ seq: 1, ts: LIVE.ts, kind: 'state', profile: 'chief', text: 'chief: idle → working' }] : [] }; if (p.startsWith('/history')) return { points: [{ ts: LIVE.ts - 600, states: { chief: 'working', sourcer: 'task' }, tpm: { chief: 1200 } }, { ts: LIVE.ts, states: { chief: 'working', sourcer: 'blocked' }, tpm: {} }] }; if (p.startsWith('/spend')) { const rg = (p.match(/range=(\w+)/) || [])[1] || 'month'; return { ...T.demoSpend(rg), demo: false } } if (p.startsWith('/unit/')) return { ...LIVE.units.chief, recent_tool_calls: [{ tool: 'read_file', target: '/x' }], recent_sessions: [{ id: 's1', title: 'A', tokens: 10, estimated_cost_usd: 0.1 }, { id: 's2', title: 'B', tokens: 5, estimated_cost_usd: 0.05 }] }; if (p === '/task') return { ok: true, task_id: 'T9' }; throw new Error('404') },
   socket: () => () => {}
 }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -273,6 +273,61 @@ const clickBtn = async (root_, pred) => { const b = Array.from(root_.querySelect
   await act(async () => { T.$selected.set(null) })
 }
 
+// ── 2f. spend view ────────────────────────────────────────────────────────────────────────────
+{
+  const spendReqs = () => log.requests.filter(r => r[0] === 'rest' && String(r[1]).startsWith('/spend')).map(r => r[1])
+  const dm = T.demoSpend('month'); const dm2 = T.demoSpend('month')
+  assert(JSON.stringify(dm) === JSON.stringify(dm2) && dm.demo === true && dm.by_day.length === 14 && T.demoSpend('30d').by_day.length === 30, 'demoSpend is deterministic and range-sized')
+  assert(Math.abs(dm.by_profile.reduce((a, r) => a + r.cost, 0) - dm.selected.cost) < 0.05 && dm.by_day.every(d => Math.abs(Object.values(d.by_provider).reduce((a, b) => a + b, 0) - d.cost) < 0.01), 'demoSpend: profile rows and day splits add up')
+  const page = rootEl.querySelector('.hermes-cockpit')
+  if (!page.querySelector('.ck-lay')) await clickBtn(page, b => b.getAttribute('aria-label') === 'Layout')
+  const spendOpt = Array.from(page.querySelectorAll('.ck-lay button')).find(b => b.textContent === 'Spend'); assert(spendOpt, 'Layout menu offers the Spend view')
+  await act(async () => { spendOpt.click() }); await act(async () => { await sleep(80) })
+  assert(T.$prefs.get().view === 'spend' && page.querySelector('.ck-spend') && !page.querySelector('.ck-lanes-box'), 'Layout → Spend shows the spend view (and hides swimlanes)')
+  assert(page.querySelector('.ck-rail [aria-label="View"] button[aria-pressed="true"]').textContent === 'Spend', 'rail toggle marks Spend')
+  assert(spendReqs().includes('/spend?range=month'), 'live mode fetches /spend?range=month')
+  const sp = () => page.querySelector('.ck-spend')
+  assert(/Estimated at API prices — not an invoice/.test(sp().textContent) && !/DEMO DATA/.test(sp().textContent), 'disclaimer visible, no demo label on live data')
+  for (const l of ['Today', 'Week', 'Month', 'Cache share', 'Waste']) assert(Array.from(sp().querySelectorAll('.ck-sp-kpi .l')).some(e => e.textContent.startsWith(l)), `KPI: ${l}`)
+  assert(sp().querySelectorAll('.ck-sp-kpi .ck-gauge').length === 3, 'pace gauges on today / week / month when a ceiling is set')
+  assert(sp().querySelectorAll('.ck-sp-panel').length === 8 && sp().querySelector('.ck-sp-chart svg rect'), 'eight panels incl. the stacked day chart')
+  assert(/Alibaba Token Plan/.test(sp().textContent) && sp().querySelector('table[aria-label="Spend by provider"]'), 'provider table shows Alibaba Token Plan')
+  // sorting
+  const prof = () => sp().querySelector('table[aria-label="Spend by profile"]')
+  const firstRow = () => prof().querySelector('tbody tr td').textContent
+  const topByCost = firstRow()
+  await act(async () => { Array.from(prof().querySelectorAll('th button')).find(b => /^Profile/.test(b.textContent)).click() })
+  assert(prof().querySelector('th[aria-sort="ascending"]') && firstRow() !== topByCost, 'profile table sorts by clicking a header')
+  await act(async () => { Array.from(prof().querySelectorAll('th button')).find(b => /^Cost/.test(b.textContent)).click() })
+  assert(firstRow() === topByCost, 'sorting by cost again restores the top spender first')
+  // waste: expand and select
+  const wh = Array.from(sp().querySelectorAll('.ck-sp-waste .wh')).find(b => /Zero output/.test(b.textContent))
+  await act(async () => { wh.click() }); assert(wh.getAttribute('aria-expanded') === 'true' && sp().querySelector('.ck-sp-waste .ex'), 'waste category expands to examples')
+  await act(async () => { sp().querySelector('.ck-sp-waste .ex').click() }); assert(T.$selected.get() === 'sourcer-cpp', 'clicking a waste example selects its unit')
+  await act(async () => { T.$selected.set(null) })
+  // range switch refetches
+  const n0 = spendReqs().length
+  await act(async () => { Array.from(sp().querySelectorAll('.ck-sp-head .ck-btn')).find(b => b.textContent === 'Week').click() }); await act(async () => { await sleep(60) })
+  assert(spendReqs().length > n0 && spendReqs().includes('/spend?range=week') && sp().querySelector('[aria-pressed="true"]').textContent !== '', 'range switch refetches /spend?range=week')
+  assert(sp().querySelectorAll('.ck-sp-chart svg g').length === 3, 'week range draws three day bars (Mon-Wed)')
+  // layout hygiene
+  const badOverflow = Array.from(page.querySelectorAll('*')).filter(el => /^(auto|scroll)$/.test(window.getComputedStyle(el).overflowX))
+  assert(badOverflow.length === 0, 'spend view: no element has overflow-x auto/scroll')
+  assert(/overflow-y:auto/.test(readFileSync(path.join(root, 'desktop', 'plugin.js'), 'utf8').match(/\.ck-scroll\{[^}]*\}/)[0]) && sp().classList.contains('ck-scroll'), 'spend view scrolls vertically inside the main area')
+  assert(/\.ck-sp-kpi b\{font:600 18px\/1\.15 var\(--ck-mono\)/.test(readFileSync(path.join(root, 'desktop', 'plugin.js'), 'utf8')), 'spend numbers are set in the mono font')
+  // short TV layout
+  const realRect = window.HTMLElement.prototype.getBoundingClientRect
+  window.HTMLElement.prototype.getBoundingClientRect = function () { return { width: 950, height: 455, left: 0, top: 0, right: 950, bottom: 455, x: 0, y: 0 } }
+  const host3 = window.document.createElement('div'); window.document.body.appendChild(host3); const r3 = ReactDOM.createRoot(host3)
+  await act(async () => { r3.render(route.render()) }); await act(async () => { await sleep(60) })
+  const pg3 = host3.querySelector('.hermes-cockpit')
+  assert(pg3.classList.contains('ck-short') && pg3.querySelector('.ck-spend .ck-sp-disc') && !pg3.querySelector('.ck-lanes-box'), '950x455: spend view renders in the short layout with the disclaimer')
+  assert(Array.from(pg3.querySelectorAll('*')).concat([pg3]).every(el => !/^(auto|scroll)$/.test(window.getComputedStyle(el).overflowX)), '950x455: no overflow-x scrollers in the spend view')
+  await act(async () => { r3.unmount() }); host3.remove(); window.HTMLElement.prototype.getBoundingClientRect = realRect
+  await act(async () => { T.$prefs.set({ ...T.$prefs.get(), view: 'grid' }) }); await act(async () => { await sleep(20) })
+  assert(!page.querySelector('.ck-spend') && page.querySelector('.ck-grid'), 'switching back to Grid removes the spend view')
+}
+
 // ── 3. rpc door ─────────────────────────────────────────────────────────────────────────
 restMode = 'fail'; await sleep(200)
 assert(T.$mode.get() === 'rpc', 'sensor gone → rpc door')
@@ -286,6 +341,9 @@ await sleep(400)
 assert(T.$mode.get() === 'demo' && T.$snap.get().mode === 'demo', 'everything unreachable → demo door after 3 failures')
 await act(async () => { await sleep(30) })
 assert(/Showing demo data/.test(rootEl.textContent), 'demo banner shown')
+await act(async () => { T.$prefs.set({ ...T.$prefs.get(), view: 'spend' }) }); await act(async () => { await sleep(60) })
+assert(/DEMO DATA/.test(rootEl.textContent) && /Estimated at API prices — not an invoice/.test(rootEl.textContent), 'demo door: spend view shows the demo dataset, labelled, with the disclaimer')
+await act(async () => { T.$prefs.set({ ...T.$prefs.get(), view: 'grid' }) })
 
 // ── 5. settings + dispose ───────────────────────────────────────────────────────────────
 await act(async () => { rootR.render(settingsPage.render()) }); await act(async () => { await sleep(10) })
